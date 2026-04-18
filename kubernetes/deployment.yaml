@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ibindex
+  namespace: ibindex
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ibindex
+  template:
+    metadata:
+      labels:
+        app: ibindex
+    spec:
+      containers:
+        - name: ibindex
+          image: ghcr.io/thomas-3145/ibindex-app:latest
+          ports:
+            - containerPort: 8501
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ibindex-secret
+                  key: database-url
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8501
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8501
+            initialDelaySeconds: 20
+            periodSeconds: 30

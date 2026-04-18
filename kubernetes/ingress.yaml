@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ibindex
+  namespace: ibindex
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - ibindex.3145.blog
+      secretName: ibindex-tls
+  rules:
+    - host: ibindex.3145.blog
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ibindex
+                port:
+                  number: 80

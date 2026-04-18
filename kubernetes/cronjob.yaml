@@ -1,0 +1,29 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ibindex-scraper
+  namespace: ibindex
+spec:
+  schedule: "0 18 * * 1-5"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: scraper
+              image: ghcr.io/thomas-3145/ibindex-app:latest
+              command: ["uv", "run", "python", "-m", "scraper.main"]
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: ibindex-secret
+                      key: database-url
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 200m
+                  memory: 256Mi
