@@ -69,7 +69,8 @@ age = datetime.now(timezone.utc) - scraped_dt
 st.caption(f"Senast uppdaterad: {scraped_dt.strftime('%Y-%m-%d %H:%M')} UTC")
 
 if age > timedelta(hours=24):
-    st.warning(f"Data är {int(age.total_seconds() / 3600)} timmar gammal. Uppdatera för aktuella priser.")
+    hours_old = int(age.total_seconds() / 3600)
+    st.warning(f"Data är {hours_old} timmar gammal. Uppdatera för aktuella priser.")
 
 # --- Portfolio ---
 try:
@@ -106,8 +107,9 @@ st.dataframe(table_data, width="stretch", hide_index=True)
 no_weight = [s for s in snapshots if not s.market_cap_weight or s.market_cap_weight == 0]
 if no_weight:
     with st.expander(f"{len(no_weight)} bolag saknar vikter (ingår ej i allokeringen)"):
+        rows = [{"Ticker": s.ticker, "Bolag": s.product_name, "Pris (SEK)": f"{s.price:,.2f}"} for s in no_weight]
         st.dataframe(
-            [{"Ticker": s.ticker, "Bolag": s.product_name, "Pris (SEK)": f"{s.price:,.2f}"} for s in no_weight],
+            rows,
             width="stretch",
             hide_index=True,
         )
