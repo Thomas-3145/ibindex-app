@@ -4,6 +4,8 @@ Ett medvetet överkonstruerat DevOps-lärprojekt — appen är ett fordon, inte 
 
 Appen i sig hämtar dagligen data om svenska investmentbolag från [ibindex.se](https://ibindex.se) och föreslår en portföljallokering baserat på marknadsvärde.
 
+> **Notering om appkoden:** Själva applikationskoden (Python, scraper, portföljlogik) är genererad av AI. Det är ett medvetet val — fokus och lärande ligger på infrastruktur och DevOps, inte apputveckling.
+
 ---
 
 ## Varför denna stack?
