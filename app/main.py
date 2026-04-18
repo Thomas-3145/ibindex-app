@@ -107,7 +107,10 @@ st.dataframe(table_data, width="stretch", hide_index=True)
 no_weight = [s for s in snapshots if not s.market_cap_weight or s.market_cap_weight == 0]
 if no_weight:
     with st.expander(f"{len(no_weight)} bolag saknar vikter (ingår ej i allokeringen)"):
-        rows = [{"Ticker": s.ticker, "Bolag": s.product_name, "Pris (SEK)": f"{s.price:,.2f}"} for s in no_weight]
+        rows = [
+            {"Ticker": s.ticker, "Bolag": s.product_name, "Pris (SEK)": f"{s.price:,.2f}"}
+            for s in no_weight
+        ]
         st.dataframe(
             rows,
             width="stretch",
