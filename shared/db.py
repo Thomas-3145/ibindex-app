@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
@@ -16,7 +17,7 @@ def get_database_url() -> str:
     return url
 
 
-def get_connection() -> psycopg.Connection:  # type: ignore[type-arg]
+def get_connection() -> psycopg.Connection[dict[str, Any]]:
     return psycopg.connect(get_database_url(), row_factory=dict_row)
 
 

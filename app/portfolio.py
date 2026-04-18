@@ -57,7 +57,7 @@ def _compute_weights(
         return {s.ticker: s.market_cap_weight for s in snapshots}  # type: ignore[misc]
 
     if method == WeightingMethod.LOG_MARKET_CAP:
-        return {s.ticker: math.log1p(s.market_cap_weight) for s in snapshots}  # type: ignore[misc]
+        return {s.ticker: math.log1p(s.market_cap_weight) for s in snapshots}  # type: ignore[arg-type]
 
     if method == WeightingMethod.CAPPED:
         return _apply_cap({s.ticker: s.market_cap_weight for s in snapshots}, cap)  # type: ignore[misc]

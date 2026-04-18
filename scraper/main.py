@@ -1,8 +1,8 @@
 import sys
 from datetime import datetime, timezone
 
-import requests
-import yfinance as yf
+import requests  # type: ignore[import-untyped]
+import yfinance as yf  # type: ignore[import-untyped]
 
 from shared.db import get_connection, init_db
 from shared.models import ProductResponse, WeightResponse
