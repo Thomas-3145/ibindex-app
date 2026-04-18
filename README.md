@@ -1,24 +1,20 @@
 # ibindex-portfolio
 
-Ett verktyg för att bygga en teoretisk portfölj av svenska investmentbolag, baserat på data från [ibindex.se](https://ibindex.se).
+Ett medvetet överkonstruerat DevOps-lärprojekt — appen är ett fordon, inte målet. Målet är att simulera en produktionsmiljö med microservices, CI/CD, Kubernetes och observability.
 
-Appen hämtar dagligen data om substansvärde (NAV), aktiepris och premie/rabatt för 21 svenska investmentbolag och föreslår en allokering baserat på vald viktningsmetod.
-
-> **Notering:** Detta projekt är medvetet överkonstruerat som ett DevOps-lärprojekt. Målet är att simulera en produktionsmiljö med microservices, CI/CD, Kubernetes och observability — inte att bygga den enklaste möjliga lösningen.
+Appen i sig hämtar dagligen data om svenska investmentbolag från [ibindex.se](https://ibindex.se) och föreslår en portföljallokering baserat på marknadsvärde.
 
 ---
 
-## Funktioner
+## Varför denna stack?
 
-- Hämtar realtidsdata från ibindex.se (pris, NAV, premie/rabatt)
-- Beräknar marknadsvikter via Yahoo Finance (antal utestående aktier × pris)
-- Fyra viktningsmetoder:
-  - **Marknadsviktat** — ren market cap-viktning
-  - **Logaritmiskt viktat** — jämnar ut dominansen från stora bolag
-  - **Marknadsviktat med tak** — market cap med konfigurerbar maxvikt per bolag
-  - **Likaviktat** — 1/N per bolag
-- Filterval per Nasdaq-lista (Large Cap, Mid Cap, Small Cap, First North)
-- Historik sparas i databasen vid varje daglig scrape
+**Python** är det naturliga valet för datahämtning och analys. Biblioteken `requests` och `yfinance` täcker båda datakällorna utan overhead.
+
+**PostgreSQL** valdes framför SQLite trots att SQLite skulle räcka för appens behov. Anledningen är att SQLite inte hanterar flera samtida skrivare — vilket bryter så fort man kör mer än en replica i Kubernetes. PostgreSQL är också vad man möter i produktion, och att lära sig hantera en riktig databasserver (anslutningssträngar, migrationer, WAL) är en del av poängen med projektet.
+
+**Streamlit** ger ett fullständigt webb-UI i ren Python utan att behöva bygga ett separat frontend-projekt. För ett lärprojekt där fokus ligger på infrastrukturen snarare än UI:t är det rätt avvägning.
+
+**Kubernetes (k3s)** och **ArgoCD** driver GitOps-flödet: ett push till `main` resulterar automatiskt i en ny deployment på homelabbets kluster. Det simulerar hur moderna produktionsmiljöer fungerar och är kärnan i vad projektet är till för att lära ut.
 
 ---
 
@@ -43,15 +39,14 @@ ibindex-app/
 | Hosting | Kubernetes (k3s) via ArgoCD |
 | Schemaläggning | Kubernetes CronJob (daglig scrape efter börsstängning) |
 
-### Varför denna stack?
+---
 
-**Python** är det naturliga valet för datahämtning och analys. Biblioteken `requests` och `yfinance` täcker båda datakällorna utan overhead.
+## Vad appen gör
 
-**PostgreSQL** valdes framför SQLite trots att SQLite skulle räcka för appens behov. Anledningen är att SQLite inte hanterar flera samtida skrivare — vilket bryter så fort man kör mer än en replica i Kubernetes. PostgreSQL är också vad man möter i produktion, och att lära sig hantera en riktig databasserver (anslutningssträngar, migrationer, WAL) är en del av poängen med projektet.
-
-**Streamlit** ger ett fullständigt webb-UI i ren Python utan att behöva bygga ett separat frontend-projekt. För en MVP där fokus ligger på infrastrukturen snarare än UI:t är det rätt avvägning.
-
-**Kubernetes (k3s)** och **ArgoCD** driver GitOps-flödet: ett push till `main` resulterar automatiskt i en ny deployment på homelabbets kluster. Det simulerar hur moderna produktionsmiljöer fungerar och är kärnan i vad projektet är till för att lära ut.
+- Hämtar pris, NAV och premie/rabatt för 21 svenska investmentbolag från ibindex.se
+- Beräknar marknadsvärdesvikter via Yahoo Finance
+- Föreslår allokering med fyra viktningsmetoder (marknadsviktat, logaritmiskt, med tak, likaviktat)
+- Sparar historik i databasen vid varje daglig scrape
 
 ---
 

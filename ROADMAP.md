@@ -118,6 +118,15 @@ Få projektet att kännas komplett och professionellt.
 
 ---
 
+## Framtida features (backlog)
+
+- **Utökat bolagsuniversum** — lägg till serieförvärvare som ett eget spår vid sidan av investmentbolagen:
+  - Addtech (ADDT B), Indutrade (INDT), Lifco (LIFCO B), Lagercrantz (LAGR B), Volati (VOLO), Vestum (VESTUM), Storskogen (STOR B)
+- **Premie/rabatt-logik** — om ett bolag handlas till premie, allokera till underliggande noterade innehav istället (kräver holdings-scraping med Playwright)
+- **Onoterade innehav** — presentera med bokfört värde och markera som statiska (t.ex. 🔒) tills nästa kvartalsrapport
+
+---
+
 ## Vägledande principer
 
 1. **Få det att fungera först, lägg till komplexitet sedan.** Varje fas producerar något som fungerar.
@@ -126,11 +135,3 @@ Få projektet att kännas komplett och professionellt.
 4. **Gör sönder saker med avsikt.** Chaos engineering är lärande — döda pods, simulera fel, se vad som händer.
 5. **Använd det industrin använder.** Föredra CNCF-graduerade projekt och utbredda verktyg.
 
----
-
-## Framtida features (backlog)
-
-- **Utökat bolagsuniversum** — lägg till serieförvärvare som ett eget spår vid sidan av investmentbolagen:
-  - Addtech (ADDT B), Indutrade (INDT), Lifco (LIFCO B), Lagercrantz (LAGR B), Volati (VOLO), Vestum (VESTUM), Storskogen (STOR B)
-- **Premie/rabatt-logik** — om ett bolag handlas till premie, allokera till underliggande noterade innehav istället (kräver holdings-scraping med Playwright)
-- **Onoterade innehav** — presentera med bokfört värde och markera som statiska (t.ex. 🔒) tills nästa kvartalsrapport
