@@ -1,5 +1,7 @@
 # ibindex-portfolio
 
+**Live:** [ibindex.3145.blog](https://ibindex.3145.blog)
+
 Ett medvetet överkonstruerat DevOps-lärprojekt — appen är ett fordon, inte målet. Målet är att simulera en produktionsmiljö med microservices, CI/CD, Kubernetes och observability.
 
 Appen i sig hämtar dagligen data om svenska investmentbolag från [ibindex.se](https://ibindex.se) och föreslår en portföljallokering baserat på marknadsvärde.
@@ -36,10 +38,12 @@ ibindex-app/
 | Del | Teknik |
 |-----|--------|
 | Scraping | Python + requests + yfinance |
-| Databas | PostgreSQL |
+| Databas | PostgreSQL (Longhorn PVC på k3s) |
 | Frontend | Streamlit |
-| Hosting | Kubernetes (k3s) via ArgoCD |
+| CI/CD | GitHub Actions → ghcr.io → ArgoCD → k3s |
+| Hosting | Kubernetes (k3s) via ArgoCD GitOps |
 | Schemaläggning | Kubernetes CronJob (daglig scrape efter börsstängning) |
+| Exponering | Cloudflare Tunnel (ingen öppen port i routern) |
 
 ---
 
@@ -101,6 +105,42 @@ uv run pytest
 
 - **[ibindex.se](https://ibindex.se)** — pris, NAV och premie/rabatt för 21 svenska investmentbolag
 - **Yahoo Finance** (via yfinance) — antal utestående aktier för marknadsvärdesberäkning
+
+---
+
+## Trafiklflöde
+
+```
+Användare → ibindex.3145.blog
+                ↓
+         Cloudflare (DNS + proxy)
+                ↓
+         Cloudflare Tunnel (cloudflared pod på k3s)
+                ↓
+         nginx Ingress Controller
+                ↓
+         ibindex Service → ibindex Pod (Streamlit)
+                                ↓
+                          postgres Pod (Longhorn PVC)
+```
+
+---
+
+## CI/CD-flöde
+
+```
+git push → main
+      ↓
+GitHub Actions
+  ├── ruff lint + format
+  ├── mypy
+  ├── pytest
+  └── docker build + push → ghcr.io/thomas-3145/ibindex-app:latest
+                                    ↓
+                             ArgoCD (syncar var 3:e minut)
+                                    ↓
+                             k3s uppdaterar Deployment
+```
 
 ---
 
