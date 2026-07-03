@@ -5,18 +5,18 @@ kind: Kustomization
 # ArgoCD only reacts to Git changes, so a floating :latest tag never
 # triggers a rollout — the pinned tag here is what drives deploys.
 images:
-  - name: ghcr.io/thomas-3145/ibindex-app
-    newTag: latest
+- name: ghcr.io/thomas-3145/ibindex-app
+  newTag: sha-34d4899c1c68cba1117869532c9be739b932d5a3
 
 resources:
-  - namespace.yaml
-  - postgres-pvc.yaml
-  - postgres-deployment.yaml
-  - postgres-service.yaml
-  - deployment.yaml
-  - service.yaml
-  - ingress.yaml
-  - cronjob.yaml
+- namespace.yaml
+- postgres-pvc.yaml
+- postgres-deployment.yaml
+- postgres-service.yaml
+- deployment.yaml
+- service.yaml
+- ingress.yaml
+- cronjob.yaml
 
 generators:
-  - ksops-generator.yaml
+- ksops-generator.yaml
