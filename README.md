@@ -49,9 +49,12 @@ ibindex-app/
 
 ## Vad appen gör
 
-- Hämtar pris, NAV och premie/rabatt för 21 svenska investmentbolag från ibindex.se
-- Beräknar marknadsvärdesvikter via Yahoo Finance
+- Hämtar pris, NAV, premie/rabatt och innehav för bolagen i ibindex från ibindex.se
+- Beräknar marknadsvärdesvikter via Yahoo Finance (med valutakonvertering för utländska noteringar)
 - Föreslår allokering med fyra viktningsmetoder (marknadsviktat, logaritmiskt, med tak, likaviktat)
+- Premie/rabatt-logik: bolag som handlas över substansvärdet kan ersättas med sina noterade innehav (valbar tröskel)
+- Genomlysningsvy: hela portföljen uttryckt i underliggande bolag istället för investmentbolag
+- Presentation som tabell, cirkeldiagram eller stapeldiagram
 - Sparar historik i databasen vid varje daglig scrape
 
 ---

@@ -27,6 +27,22 @@ CREATE TABLE IF NOT EXISTS snapshots (
     scraped_at                    TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS holdings (
+    id            SERIAL PRIMARY KEY,
+    scrape_run_id INTEGER NOT NULL REFERENCES scrape_runs(id),
+    owner_ticker  TEXT NOT NULL REFERENCES products(ticker),
+    holding_ticker TEXT,
+    holding_name  TEXT NOT NULL,
+    exchange      TEXT,
+    value         NUMERIC NOT NULL,
+    category      TEXT NOT NULL,
+    category_name TEXT NOT NULL,
+    scraped_at    TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_holdings_run
+    ON holdings(scrape_run_id);
+
 -- Idempotent migration for existing databases
 ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS market_cap_weight NUMERIC;
 

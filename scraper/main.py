@@ -1,3 +1,4 @@
+import json
 import sys
 from datetime import datetime, timezone
 
@@ -5,10 +6,11 @@ import requests
 import yfinance as yf  # type: ignore[import-untyped]
 
 from shared.db import get_connection, init_db
-from shared.models import ProductResponse, WeightResponse
+from shared.models import HoldingResponse, ProductResponse, WeightResponse
 
 PRODUCTS_URL = "https://ibindex.se/ibi/index/getProducts.req"
 WEIGHTS_URL = "https://ibindex.se/ibi/index/getProductWeights.req"
+HOLDINGS_URL = "https://ibindex.se/ibi/company/getHoldings.req"
 TIMEOUT = 10
 
 # Companies not listed on Nasdaq Stockholm, where the ".ST" rule fails.
@@ -38,6 +40,19 @@ def fetch_weights() -> dict[str, float]:
         return {}
     weights = [WeightResponse.model_validate(item) for item in data]
     return {w.ticker: w.weight for w in weights}
+
+
+def fetch_holdings(ticker: str) -> list[HoldingResponse]:
+    # The ibindex API expects the ticker as a JSON-encoded string body and
+    # rejects plain "application/json" — the charset suffix is required.
+    response = requests.post(
+        HOLDINGS_URL,
+        data=json.dumps(ticker),
+        headers={"Content-Type": "application/json;charset=UTF-8"},
+        timeout=TIMEOUT,
+    )
+    response.raise_for_status()
+    return [HoldingResponse.model_validate(item) for item in response.json() or []]
 
 
 def fetch_market_cap_weights(products: list[ProductResponse]) -> dict[str, float]:
@@ -85,6 +100,10 @@ def main() -> None:
         market_cap_weights = fetch_market_cap_weights(products)
         print(f"Marknadsvikt beräknad för {len(market_cap_weights)} bolag")
 
+        print("Hämtar innehav från ibindex.se...")
+        holdings = {p.ticker: fetch_holdings(p.ticker) for p in products}
+        print(f"Innehav hämtade för {sum(1 for h in holdings.values() if h)} bolag")
+
         with get_connection() as conn:
             row = conn.execute(
                 "INSERT INTO scrape_runs (scraped_at, status) VALUES (%s, %s) RETURNING id",
@@ -127,6 +146,26 @@ def main() -> None:
                         scraped_at,
                     ),
                 )
+                for h in holdings[p.ticker]:
+                    conn.execute(
+                        """
+                        INSERT INTO holdings (
+                            scrape_run_id, owner_ticker, holding_ticker, holding_name,
+                            exchange, value, category, category_name, scraped_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            run_id,
+                            p.ticker,
+                            h.holding_ticker,
+                            h.holding_name,
+                            h.exchange,
+                            h.value,
+                            h.category,
+                            h.category_name,
+                            scraped_at,
+                        ),
+                    )
 
         print(f"Scraped {len(products)} products (run_id={run_id})")
 

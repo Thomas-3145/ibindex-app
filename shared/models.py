@@ -29,6 +29,32 @@ class WeightResponse(BaseModel):
     weight: float
 
 
+class HoldingResponse(BaseModel):
+    """One entry from POST /ibi/company/getHoldings.req"""
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    holding_ticker: str | None = Field(default=None, alias="holdingProduct")
+    holding_name: str = Field(alias="holdingName")
+    exchange: str | None = Field(default=None, alias="holdingExchange")
+    value: float = Field(alias="holdingValue")
+    category: str
+    category_name: str = Field(alias="categoryName")
+
+
+class HoldingRow(BaseModel):
+    """One row from the holdings table."""
+
+    owner_ticker: str
+    holding_ticker: str | None
+    holding_name: str
+    exchange: str | None
+    value: float
+    category: str
+    category_name: str
+    scraped_at: datetime
+
+
 class SnapshotRow(BaseModel):
     """One row from the snapshots table, joined with products."""
 
@@ -55,3 +81,17 @@ class AllocationResult(BaseModel):
     weight: float
     allocated_sek: float
     approx_shares: float
+
+
+class UnderlyingAllocation(BaseModel):
+    """One row after expanding investment companies into their holdings.
+
+    `via` lists how the exposure is obtained: "Direkt" for companies kept
+    as-is, otherwise the names of the investment companies holding it.
+    """
+
+    name: str
+    ticker: str | None
+    allocated_sek: float
+    weight: float
+    via: list[str]

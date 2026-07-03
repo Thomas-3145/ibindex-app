@@ -122,7 +122,7 @@ Få projektet att kännas komplett och professionellt.
 
 - **Utökat bolagsuniversum** — lägg till serieförvärvare som ett eget spår vid sidan av investmentbolagen:
   - Addtech (ADDT B), Indutrade (INDT), Lifco (LIFCO B), Lagercrantz (LAGR B), Volati (VOLO), Vestum (VESTUM), Storskogen (STOR B)
-- **Premie/rabatt-logik** — om ett bolag handlas till premie, allokera till underliggande noterade innehav istället (kräver holdings-scraping med Playwright)
+- ~~**Premie/rabatt-logik**~~ — ✅ Klar. Ingen Playwright behövdes: ibindex har en JSON-endpoint (`company/getHoldings.req`)
 - **Onoterade innehav** — presentera med bokfört värde och markera som statiska (t.ex. 🔒) tills nästa kvartalsrapport
 
 ---

@@ -5,7 +5,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
-from shared.models import SnapshotRow
+from shared.models import HoldingRow, SnapshotRow
 
 _SCHEMA_PATH = Path(__file__).parent.parent / "db" / "schema.sql"
 
@@ -56,6 +56,32 @@ def get_latest_snapshots() -> list[SnapshotRow]:
         rows = conn.execute(sql).fetchall()
 
     return [SnapshotRow(**row) for row in rows]
+
+
+def get_latest_holdings() -> list[HoldingRow]:
+    sql = """
+        SELECT
+            owner_ticker,
+            holding_ticker,
+            holding_name,
+            exchange,
+            value,
+            category,
+            category_name,
+            scraped_at
+        FROM holdings
+        WHERE scrape_run_id = (
+            SELECT id FROM scrape_runs
+            WHERE status = 'ok'
+            ORDER BY scraped_at DESC
+            LIMIT 1
+        )
+        ORDER BY owner_ticker, value DESC
+    """
+    with get_connection() as conn:
+        rows = conn.execute(sql).fetchall()
+
+    return [HoldingRow(**row) for row in rows]
 
 
 def get_latest_scrape_time() -> str | None:
