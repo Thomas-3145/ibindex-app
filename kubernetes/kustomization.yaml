@@ -6,7 +6,7 @@ kind: Kustomization
 # triggers a rollout — the pinned tag here is what drives deploys.
 images:
 - name: ghcr.io/thomas-3145/ibindex-app
-  newTag: sha-4f9b7c756c10836cb1b3379e7024582a5a5da80c
+  newTag: sha-7cc60686f3b6724e55b48e41499576d1ee3850d7
 
 resources:
 - namespace.yaml
