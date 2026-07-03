@@ -16,3 +16,6 @@ data/
 *.db
 *.db-wal
 *.db-shm
+
+# Crash dumps
+core.*

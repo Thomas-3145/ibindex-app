@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -38,7 +39,11 @@ with st.sidebar:
         default=LISTS,
     )
 
-    if st.button("Uppdatera data"):
+    # Disabled in the cluster (the CronJob scrapes there): the subprocess
+    # spawns yfinance/pandas inside the app pod's tight memory limit.
+    scrape_button_enabled = os.environ.get("ENABLE_SCRAPE_BUTTON", "true").lower() == "true"
+
+    if scrape_button_enabled and st.button("Uppdatera data"):
         with st.spinner("Hämtar data från ibindex.se..."):
             result = subprocess.run(
                 [sys.executable, "-m", "scraper.main"],
@@ -68,7 +73,8 @@ if scraped_dt.tzinfo is None:
 age = datetime.now(timezone.utc) - scraped_dt
 st.caption(f"Senast uppdaterad: {scraped_dt.strftime('%Y-%m-%d %H:%M')} UTC")
 
-if age > timedelta(hours=24):
+# 72h so weekends (the scraper runs Mon-Fri) don't trigger false alarms.
+if age > timedelta(hours=72):
     hours_old = int(age.total_seconds() / 3600)
     st.warning(f"Data är {hours_old} timmar gammal. Uppdatera för aktuella priser.")
 
@@ -104,7 +110,7 @@ table_data = [
 st.dataframe(table_data, width="stretch", hide_index=True)
 
 # --- Companies without weights ---
-no_weight = [s for s in snapshots if not s.market_cap_weight or s.market_cap_weight == 0]
+no_weight = [s for s in filtered if not s.market_cap_weight]
 if no_weight:
     with st.expander(f"{len(no_weight)} bolag saknar vikter (ingår ej i allokeringen)"):
         rows = [

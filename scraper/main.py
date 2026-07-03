@@ -1,7 +1,7 @@
 import sys
 from datetime import datetime, timezone
 
-import requests  # type: ignore[import-untyped]
+import requests
 import yfinance as yf  # type: ignore[import-untyped]
 
 from shared.db import get_connection, init_db
@@ -114,11 +114,16 @@ def main() -> None:
         print(f"Scraped {len(products)} products (run_id={run_id})")
 
     except Exception as exc:
-        with get_connection() as conn:
-            conn.execute(
-                "INSERT INTO scrape_runs (scraped_at, status) VALUES (%s, %s)",
-                (scraped_at, "error"),
-            )
+        # The DB itself may be what failed — never let this write mask the
+        # original error or the non-zero exit code.
+        try:
+            with get_connection() as conn:
+                conn.execute(
+                    "INSERT INTO scrape_runs (scraped_at, status) VALUES (%s, %s)",
+                    (scraped_at, "error"),
+                )
+        except Exception as db_exc:
+            print(f"Could not record failed run: {db_exc}", file=sys.stderr)
         print(f"Scrape failed: {exc}", file=sys.stderr)
         sys.exit(1)
 

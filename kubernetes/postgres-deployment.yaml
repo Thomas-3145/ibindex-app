@@ -5,6 +5,10 @@ metadata:
   namespace: ibindex
 spec:
   replicas: 1
+  # RWO PVC: a rolling update would schedule the new pod while the old one
+  # still holds the volume, deadlocking the rollout.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: postgres

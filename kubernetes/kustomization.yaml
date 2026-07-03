@@ -1,6 +1,13 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# Pinned by CI after each image build (kustomize edit set image).
+# ArgoCD only reacts to Git changes, so a floating :latest tag never
+# triggers a rollout — the pinned tag here is what drives deploys.
+images:
+  - name: ghcr.io/thomas-3145/ibindex-app
+    newTag: latest
+
 resources:
   - namespace.yaml
   - postgres-pvc.yaml

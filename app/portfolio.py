@@ -17,6 +17,8 @@ def allocate(
     method: WeightingMethod = WeightingMethod.MARKET_CAP,
     cap: float = 20.0,
 ) -> list[AllocationResult]:
+    # Companies without market-cap data are excluded from every method,
+    # including EQUAL, so all methods allocate over the same universe.
     eligible = [s for s in snapshots if s.market_cap_weight and s.price > 0]
 
     if not eligible:
@@ -69,18 +71,27 @@ def _apply_cap(weights: dict[str, float], cap_pct: float) -> dict[str, float]:
     total = sum(weights.values())
     cap = cap_pct / 100 * total
     result = dict(weights)
+    capped: set[str] = set()
 
-    for _ in range(100):  # iterate until stable
-        over = {t: w for t, w in result.items() if w > cap}
+    # Cap and freeze, redistributing only to unfrozen tickers. Without the
+    # freeze the excess bounces between already-capped tickers and never
+    # settles when the cap is tight or infeasible (cap * n < 100%).
+    while True:
+        over = {t for t, w in result.items() if w > cap and t not in capped}
         if not over:
             break
-        excess = sum(w - cap for w in over.values())
-        under = {t: w for t, w in result.items() if w <= cap}
-        under_total = sum(under.values())
+        excess = sum(result[t] - cap for t in over)
         for t in over:
             result[t] = cap
-        if under_total > 0:
-            for t in under:
-                result[t] += excess * (result[t] / under_total)
+        capped |= over
+
+        free_total = sum(w for t, w in result.items() if t not in capped)
+        if free_total == 0:
+            # Infeasible cap: everything sits at the cap; normalization in
+            # allocate() turns this into an equal weighting.
+            break
+        for t in result:
+            if t not in capped:
+                result[t] += excess * (result[t] / free_total)
 
     return result

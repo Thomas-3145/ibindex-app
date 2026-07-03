@@ -13,7 +13,7 @@ spec:
           containers:
             - name: scraper
               image: ghcr.io/thomas-3145/ibindex-app:latest
-              command: ["uv", "run", "python", "-m", "scraper.main"]
+              command: [".venv/bin/python", "-m", "scraper.main"]
               env:
                 - name: DATABASE_URL
                   valueFrom:

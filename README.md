@@ -60,7 +60,7 @@ ibindex-app/
 
 ### Krav
 
-- Python 3.14+
+- Python 3.13 (samma version som prod-imagen)
 - [uv](https://github.com/astral-sh/uv)
 - PostgreSQL (eller Docker)
 
@@ -135,9 +135,10 @@ GitHub Actions
   ├── ruff lint + format
   ├── mypy
   ├── pytest
-  └── docker build + push → ghcr.io/thomas-3145/ibindex-app:latest
+  ├── docker build + push → ghcr.io/thomas-3145/ibindex-app:sha-<commit>
+  └── kustomize edit set image → commit av ny tag till kubernetes/
                                     ↓
-                             ArgoCD (syncar var 3:e minut)
+                             ArgoCD (syncar var 3:e minut, ser ny tag i Git)
                                     ↓
                              k3s uppdaterar Deployment
 ```
