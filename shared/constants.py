@@ -1,5 +1,5 @@
-# Nasdaq Stockholm list classification per ibindex ticker.
-# Updated: 2026-04-03. Change rarely — update manually if a company moves list.
+# Exchange list classification per ibindex ticker (Nasdaq Stockholm unless noted).
+# Updated: 2026-07-03. Change rarely — update manually if a company moves list.
 NASDAQ_LIST: dict[str, str] = {
     "INVE B": "Large Cap",
     "INDU C": "Large Cap",
@@ -21,7 +21,7 @@ NASDAQ_LIST: dict[str, str] = {
     "VEFAB": "First North",
     "FIRST B": "First North",
     "COLLAX": "First North",
-    "SON": "First North",
+    "SON": "Euronext Lisbon",
 }
 
-LISTS = ["Large Cap", "Mid Cap", "Small Cap", "First North"]
+LISTS = ["Large Cap", "Mid Cap", "Small Cap", "First North", "Euronext Lisbon"]

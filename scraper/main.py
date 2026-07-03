@@ -11,8 +11,16 @@ PRODUCTS_URL = "https://ibindex.se/ibi/index/getProducts.req"
 WEIGHTS_URL = "https://ibindex.se/ibi/index/getProductWeights.req"
 TIMEOUT = 10
 
+# Companies not listed on Nasdaq Stockholm, where the ".ST" rule fails.
+YAHOO_TICKER_OVERRIDES = {
+    "SON": "SON.LS",  # Sonae, SGPS — Euronext Lisbon
+}
+
 
 def to_yahoo_ticker(ibindex_ticker: str) -> str:
+    override = YAHOO_TICKER_OVERRIDES.get(ibindex_ticker)
+    if override:
+        return override
     return ibindex_ticker.replace(" ", "-") + ".ST"
 
 
@@ -34,6 +42,7 @@ def fetch_weights() -> dict[str, float]:
 
 def fetch_market_cap_weights(products: list[ProductResponse]) -> dict[str, float]:
     market_caps: dict[str, float] = {}
+    fx_to_sek: dict[str, float] = {"SEK": 1.0}
 
     yahoo_tickers = [to_yahoo_ticker(p.ticker) for p in products]
     data = yf.Tickers(" ".join(yahoo_tickers))
@@ -43,8 +52,16 @@ def fetch_market_cap_weights(products: list[ProductResponse]) -> dict[str, float
         try:
             info = data.tickers[yahoo_ticker].info
             shares = info.get("sharesOutstanding")
-            if shares and p.price > 0:
-                market_caps[p.ticker] = p.price * shares
+            if not shares or p.price <= 0:
+                continue
+            # ibindex reports foreign listings (e.g. SON) in their native
+            # currency, so the market cap must be converted to SEK to be
+            # comparable.
+            currency = info.get("currency") or "SEK"
+            if currency not in fx_to_sek:
+                rate = yf.Ticker(f"{currency}SEK=X").fast_info["last_price"]
+                fx_to_sek[currency] = float(rate)
+            market_caps[p.ticker] = p.price * shares * fx_to_sek[currency]
         except Exception:
             pass
 
