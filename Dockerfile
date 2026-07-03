@@ -7,6 +7,7 @@ COPY pyproject.toml uv.lock ./
 COPY shared/ shared/
 COPY app/ app/
 COPY scraper/ scraper/
+COPY db/ db/
 
 RUN uv sync --no-dev
 
