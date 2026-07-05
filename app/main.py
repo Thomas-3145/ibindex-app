@@ -1,19 +1,32 @@
 import os
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import streamlit as st
 
 from app.charts import bars, donut
-from app.portfolio import WeightingMethod, allocate, expand_allocations, premium_pct
-from shared.constants import LISTS, NASDAQ_LIST
-from shared.db import get_latest_holdings, get_latest_scrape_time, get_latest_snapshots
-from shared.models import HoldingRow
+from app.portfolio import WeightingMethod, allocate, expand_allocations
+from shared.constants import LISTS, NASDAQ_LIST, UNKNOWN_LIST
+from shared.db import get_holdings, get_latest_run, get_snapshots
+from shared.models import HoldingRow, SnapshotRow
 
 VIEW_COMPANIES = "Investmentbolag"
 VIEW_PREMIUM = "Ersätt bolag med premie"
 VIEW_LOOK_THROUGH = "Endast underliggande bolag"
+
+
+# Streamlit reruns the whole script on every widget interaction; without the
+# cache each slider tick opens fresh DB connections. One loader keeps the
+# snapshot/holdings pair consistent (same scrape run).
+@st.cache_data(ttl=300)
+def load_data() -> tuple[datetime, list[SnapshotRow], list[HoldingRow]] | None:
+    run = get_latest_run()
+    if run is None:
+        return None
+    run_id, scraped_at = run
+    return scraped_at, get_snapshots(run_id), get_holdings(run_id)
+
 
 st.set_page_config(page_title="ibindex portfolio", layout="wide")
 st.title("ibindex portfolio")
@@ -67,9 +80,10 @@ with st.sidebar:
             help="Bolag ersätts först när premien överstiger tröskeln.",
         )
 
-    # Disabled in the cluster (the CronJob scrapes there): the subprocess
-    # spawns yfinance/pandas inside the app pod's tight memory limit.
-    scrape_button_enabled = os.environ.get("ENABLE_SCRAPE_BUTTON", "true").lower() == "true"
+    # Off by default (fail closed): anyone reaching the app could otherwise
+    # spawn scrape subprocesses. Set ENABLE_SCRAPE_BUTTON=true for local dev;
+    # in the cluster the CronJob scrapes instead.
+    scrape_button_enabled = os.environ.get("ENABLE_SCRAPE_BUTTON", "false").lower() == "true"
 
     if scrape_button_enabled and st.button("Uppdatera data"):
         with st.spinner("Hämtar data från ibindex.se..."):
@@ -80,25 +94,25 @@ with st.sidebar:
             )
         if result.returncode == 0:
             st.success("Data uppdaterad!")
+            load_data.clear()
             st.rerun()
         else:
             st.error(f"Fel vid hämtning:\n{result.stderr}")
 
-# --- Data freshness ---
+# --- Load data ---
 try:
-    last_scraped = get_latest_scrape_time()
-except Exception:
-    last_scraped = None
-
-if last_scraped is None:
-    st.warning("Ingen data hittad. Klicka på 'Uppdatera data' i sidopanelen.")
+    data = load_data()
+except Exception as e:
+    st.error(f"Kunde inte läsa databas: {e}")
     st.stop()
 
-scraped_dt = datetime.fromisoformat(last_scraped)
-if scraped_dt.tzinfo is None:
-    scraped_dt = scraped_dt.replace(tzinfo=timezone.utc)
+if data is None:
+    st.warning("Ingen data hittad. Kör scrapern: python -m scraper.main")
+    st.stop()
 
-age = datetime.now(timezone.utc) - scraped_dt
+scraped_dt, snapshots, holdings = data
+
+age = datetime.now(UTC) - scraped_dt
 st.caption(f"Senast uppdaterad: {scraped_dt.strftime('%Y-%m-%d %H:%M')} UTC")
 
 # 72h so weekends (the scraper runs Mon-Fri) don't trigger false alarms.
@@ -107,13 +121,7 @@ if age > timedelta(hours=72):
     st.warning(f"Data är {hours_old} timmar gammal. Uppdatera för aktuella priser.")
 
 # --- Portfolio ---
-try:
-    snapshots = get_latest_snapshots()
-except Exception as e:
-    st.error(f"Kunde inte läsa databas: {e}")
-    st.stop()
-
-filtered = [s for s in snapshots if NASDAQ_LIST.get(s.ticker) in selected_lists]
+filtered = [s for s in snapshots if NASDAQ_LIST.get(s.ticker, UNKNOWN_LIST) in selected_lists]
 results = allocate(filtered, float(capital), method=method, cap=float(cap))
 
 if not results:
@@ -121,15 +129,9 @@ if not results:
     st.stop()
 
 # --- Holdings-based views ---
-holdings: list[HoldingRow] = []
-if view != VIEW_COMPANIES:
-    try:
-        holdings = get_latest_holdings()
-    except Exception:
-        holdings = []
-    if not holdings:
-        st.info("Innehavsdata saknas ännu — den fylls på vid nästa scrape. Visar investmentbolag.")
-        view = VIEW_COMPANIES
+if view != VIEW_COMPANIES and not holdings:
+    st.info("Innehavsdata saknas ännu — den fylls på vid nästa scrape. Visar investmentbolag.")
+    view = VIEW_COMPANIES
 
 if view == VIEW_COMPANIES:
     table_data = [
@@ -145,7 +147,7 @@ if view == VIEW_COMPANIES:
     ]
     chart_rows = [(r.product_name, r.allocated_sek, r.weight) for r in results]
 else:
-    expanded = expand_allocations(
+    expanded, replaced = expand_allocations(
         results,
         filtered,
         holdings,
@@ -164,21 +166,11 @@ else:
     ]
     chart_rows = [(e.name, e.allocated_sek, e.weight) for e in expanded]
 
-    if view == VIEW_PREMIUM:
-        snap_by_ticker = {s.ticker: s for s in filtered}
-        owners_with_listed = {h.owner_ticker for h in holdings if h.category == "LST"}
-        replaced = []
-        for r in results:
-            snapshot = snap_by_ticker.get(r.ticker)
-            premium = premium_pct(snapshot) if snapshot else None
-            if (
-                premium is not None
-                and premium > premium_threshold
-                and r.ticker in owners_with_listed
-            ):
-                replaced.append(f"{r.product_name} (+{premium:.1f} %)")
-        if replaced:
-            st.caption("Ersatta premiebolag: " + ", ".join(replaced))
+    if view == VIEW_PREMIUM and replaced:
+        st.caption(
+            "Ersatta premiebolag: "
+            + ", ".join(f"{name} (+{premium:.1f} %)" for name, premium in replaced)
+        )
 
 # --- Presentation ---
 st.subheader(f"Allokering — {capital:,.0f} SEK")

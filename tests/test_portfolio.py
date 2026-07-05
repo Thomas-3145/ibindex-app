@@ -1,3 +1,5 @@
+from datetime import UTC
+
 from app.portfolio import WeightingMethod, _apply_cap, allocate, expand_allocations, premium_pct
 from shared.models import HoldingRow, SnapshotRow
 
@@ -104,7 +106,7 @@ def test_apply_cap_noop_when_under_cap() -> None:
 
 
 def test_allocate_all_without_weight() -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     snapshots = [
         SnapshotRow(
@@ -119,7 +121,7 @@ def test_allocate_all_without_weight() -> None:
             nav_calculated_rebate_premium=None,
             weight=None,
             market_cap_weight=None,
-            scraped_at=datetime.now(timezone.utc),
+            scraped_at=datetime.now(UTC),
         )
     ]
     assert allocate(snapshots, 100_000) == []
@@ -143,7 +145,7 @@ def test_expand_replaces_premium_companies_only(
 ) -> None:
 
     results = allocate(sample_snapshots, 100_000)
-    expanded = expand_allocations(results, sample_snapshots, sample_holdings)
+    expanded, _ = expand_allocations(results, sample_snapshots, sample_holdings)
     names = {e.name for e in expanded}
     assert "Atlas Copco A" in names and "Tele2 B" in names
     assert "Investor B" not in names and "Kinnevik B" not in names
@@ -155,7 +157,7 @@ def test_expand_excludes_unlisted_and_debt(
 ) -> None:
 
     results = allocate(sample_snapshots, 100_000)
-    expanded = expand_allocations(results, sample_snapshots, sample_holdings)
+    expanded, _ = expand_allocations(results, sample_snapshots, sample_holdings)
     names = {e.name for e in expanded}
     assert "Mölnlycke" not in names
     assert "Nettoskuld" not in names
@@ -166,7 +168,7 @@ def test_expand_preserves_capital(
 ) -> None:
 
     results = allocate(sample_snapshots, 100_000)
-    expanded = expand_allocations(results, sample_snapshots, sample_holdings)
+    expanded, _ = expand_allocations(results, sample_snapshots, sample_holdings)
     assert abs(sum(e.allocated_sek for e in expanded) - 100_000) < 0.05
 
 
@@ -176,7 +178,7 @@ def test_expand_aggregates_shared_holdings(
 
     results = allocate(sample_snapshots, 100_000)
     by_ticker = {r.ticker: r for r in results}
-    expanded = expand_allocations(results, sample_snapshots, sample_holdings)
+    expanded, _ = expand_allocations(results, sample_snapshots, sample_holdings)
     abb = next(e for e in expanded if e.name == "ABB")
     # ABB via both owners: 300/900 of Investor's + 100/200 of Kinnevik's allocation
     expected = by_ticker["INVE B"].allocated_sek * (300 / 900) + by_ticker[
@@ -191,12 +193,23 @@ def test_expand_respects_threshold(
 ) -> None:
 
     results = allocate(sample_snapshots, 100_000)
-    expanded = expand_allocations(
+    expanded, replaced = expand_allocations(
         results, sample_snapshots, sample_holdings, premium_threshold=10.0
     )
     # both premiums are ~7.14% < 10% -> nothing expanded
     assert {e.name for e in expanded} == {"Investor B", "Kinnevik B", "Bure Equity"}
     assert all(e.via == ["Direkt"] for e in expanded)
+    assert replaced == []
+
+
+def test_expand_reports_replaced_companies(
+    sample_snapshots: list[SnapshotRow], sample_holdings: list[HoldingRow]
+) -> None:
+    results = allocate(sample_snapshots, 100_000)
+    _, replaced = expand_allocations(results, sample_snapshots, sample_holdings)
+    names = {name for name, _ in replaced}
+    assert names == {"Investor B", "Kinnevik B"}
+    assert all(premium > 0 for _, premium in replaced)
 
 
 def test_expand_keeps_premium_company_without_holdings(
@@ -205,7 +218,7 @@ def test_expand_keeps_premium_company_without_holdings(
 
     without_kinv = [h for h in sample_holdings if h.owner_ticker != "KINV B"]
     results = allocate(sample_snapshots, 100_000)
-    expanded = expand_allocations(results, sample_snapshots, without_kinv)
+    expanded, _ = expand_allocations(results, sample_snapshots, without_kinv)
     kinv = next(e for e in expanded if e.name == "Kinnevik B")
     assert kinv.via == ["Direkt"]
 
@@ -215,7 +228,7 @@ def test_expand_all_is_full_look_through(
 ) -> None:
 
     results = allocate(sample_snapshots, 100_000)
-    expanded = expand_allocations(results, sample_snapshots, sample_holdings, expand_all=True)
+    expanded, _ = expand_allocations(results, sample_snapshots, sample_holdings, expand_all=True)
     names = {e.name for e in expanded}
     assert "Vitrolife" in names  # BURE expanded despite discount
     assert "Bure Equity" not in names

@@ -9,7 +9,7 @@ COPY app/ app/
 COPY scraper/ scraper/
 COPY db/ db/
 
-RUN uv sync --no-dev
+RUN uv sync --no-dev --frozen
 
 EXPOSE 8501
 

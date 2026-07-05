@@ -81,7 +81,7 @@ def expand_allocations(
     holdings: list[HoldingRow],
     expand_all: bool = False,
     premium_threshold: float = 0.0,
-) -> list[UnderlyingAllocation]:
+) -> tuple[list[UnderlyingAllocation], list[tuple[str, float]]]:
     """Replace investment companies with their listed holdings.
 
     With expand_all=False only companies trading above `premium_threshold`
@@ -90,6 +90,9 @@ def expand_allocations(
     buyable, so each company's allocation is distributed over those — this
     implicitly spreads the unlisted part proportionally. Expansion is one
     level deep: a holding that is itself an investment company is kept as-is.
+
+    Returns the expanded allocations plus, for premium-based expansion,
+    the (product_name, premium_pct) of each company that was replaced.
     """
     snap_by_ticker = {s.ticker: s for s in snapshots}
 
@@ -111,6 +114,7 @@ def expand_allocations(
             if via not in entry.via:
                 entry.via.append(via)
 
+    replaced: list[tuple[str, float]] = []
     for r in results:
         listed = listed_by_owner.get(r.ticker, [])
         should_expand = bool(listed)
@@ -118,6 +122,9 @@ def expand_allocations(
             snapshot = snap_by_ticker.get(r.ticker)
             premium = premium_pct(snapshot) if snapshot else None
             should_expand = bool(listed) and premium is not None and premium > premium_threshold
+            if should_expand:
+                assert premium is not None
+                replaced.append((r.product_name, premium))
 
         if not should_expand:
             add(r.ticker, r.product_name, r.ticker, r.allocated_sek, "Direkt")
@@ -138,7 +145,7 @@ def expand_allocations(
     for e in entries:
         e.weight = round(e.allocated_sek / total * 100, 2)
         e.allocated_sek = round(e.allocated_sek, 2)
-    return entries
+    return entries, replaced
 
 
 def _apply_cap(weights: dict[str, float], cap_pct: float) -> dict[str, float]:

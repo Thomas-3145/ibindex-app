@@ -1,6 +1,6 @@
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import requests
 import yfinance as yf  # type: ignore[import-untyped]
@@ -77,8 +77,8 @@ def fetch_market_cap_weights(products: list[ProductResponse]) -> dict[str, float
                 rate = yf.Ticker(f"{currency}SEK=X").fast_info["last_price"]
                 fx_to_sek[currency] = float(rate)
             market_caps[p.ticker] = p.price * shares * fx_to_sek[currency]
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"Market cap unavailable for {p.ticker} ({yahoo_ticker}): {exc}", file=sys.stderr)
 
     total = sum(market_caps.values())
     if total == 0:
@@ -90,7 +90,7 @@ def fetch_market_cap_weights(products: list[ProductResponse]) -> dict[str, float
 def main() -> None:
     init_db()
 
-    scraped_at = datetime.now(timezone.utc)
+    scraped_at = datetime.now(UTC)
 
     try:
         products = fetch_products()
@@ -100,37 +100,53 @@ def main() -> None:
         market_cap_weights = fetch_market_cap_weights(products)
         print(f"Marknadsvikt beräknad för {len(market_cap_weights)} bolag")
 
+        # A broken yfinance integration would otherwise record an 'ok' run
+        # with no weights, silently emptying the app's allocation view.
+        if len(market_cap_weights) < len(products) / 2:
+            raise RuntimeError(
+                f"Market cap weights for only {len(market_cap_weights)} of "
+                f"{len(products)} companies — aborting run"
+            )
+
         print("Hämtar innehav från ibindex.se...")
-        holdings = {p.ticker: fetch_holdings(p.ticker) for p in products}
+        # One flaky request should cost that company's holdings, not the
+        # whole evening's snapshot.
+        holdings: dict[str, list[HoldingResponse]] = {}
+        for p in products:
+            try:
+                holdings[p.ticker] = fetch_holdings(p.ticker)
+            except Exception as exc:
+                print(f"Holdings fetch failed for {p.ticker}: {exc}", file=sys.stderr)
+                holdings[p.ticker] = []
         print(f"Innehav hämtade för {sum(1 for h in holdings.values() if h)} bolag")
 
-        with get_connection() as conn:
-            row = conn.execute(
+        with get_connection() as conn, conn.cursor() as cur:
+            row = cur.execute(
                 "INSERT INTO scrape_runs (scraped_at, status) VALUES (%s, %s) RETURNING id",
                 (scraped_at, "ok"),
             ).fetchone()
             assert row is not None
             run_id = row["id"]
 
-            for p in products:
-                conn.execute(
-                    """
-                    INSERT INTO products (ticker, product_name, first_seen_at, last_updated_at)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (ticker) DO UPDATE
-                        SET product_name = EXCLUDED.product_name,
-                            last_updated_at = EXCLUDED.last_updated_at
-                    """,
-                    (p.ticker, p.product_name, scraped_at, scraped_at),
-                )
-                conn.execute(
-                    """
-                    INSERT INTO snapshots (
-                        scrape_run_id, ticker, price, previous_price, price_change,
-                        nav, nav_calculated, nav_rebate_premium,
-                        nav_calculated_rebate_premium, weight, market_cap_weight, scraped_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
+            cur.executemany(
+                """
+                INSERT INTO products (ticker, product_name, first_seen_at, last_updated_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (ticker) DO UPDATE
+                    SET product_name = EXCLUDED.product_name,
+                        last_updated_at = EXCLUDED.last_updated_at
+                """,
+                [(p.ticker, p.product_name, scraped_at, scraped_at) for p in products],
+            )
+            cur.executemany(
+                """
+                INSERT INTO snapshots (
+                    scrape_run_id, ticker, price, previous_price, price_change,
+                    nav, nav_calculated, nav_rebate_premium,
+                    nav_calculated_rebate_premium, weight, market_cap_weight, scraped_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                [
                     (
                         run_id,
                         p.ticker,
@@ -144,28 +160,35 @@ def main() -> None:
                         weights.get(p.ticker),
                         market_cap_weights.get(p.ticker),
                         scraped_at,
-                    ),
-                )
-                for h in holdings[p.ticker]:
-                    conn.execute(
-                        """
-                        INSERT INTO holdings (
-                            scrape_run_id, owner_ticker, holding_ticker, holding_name,
-                            exchange, value, category, category_name, scraped_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            run_id,
-                            p.ticker,
-                            h.holding_ticker,
-                            h.holding_name,
-                            h.exchange,
-                            h.value,
-                            h.category,
-                            h.category_name,
-                            scraped_at,
-                        ),
                     )
+                    for p in products
+                ],
+            )
+            holding_rows = [
+                (
+                    run_id,
+                    p.ticker,
+                    h.holding_ticker,
+                    h.holding_name,
+                    h.exchange,
+                    h.value,
+                    h.category,
+                    h.category_name,
+                    scraped_at,
+                )
+                for p in products
+                for h in holdings[p.ticker]
+            ]
+            if holding_rows:
+                cur.executemany(
+                    """
+                    INSERT INTO holdings (
+                        scrape_run_id, owner_ticker, holding_ticker, holding_name,
+                        exchange, value, category, category_name, scraped_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    holding_rows,
+                )
 
         print(f"Scraped {len(products)} products (run_id={run_id})")
 

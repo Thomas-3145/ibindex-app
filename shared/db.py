@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,24 @@ def init_db() -> None:
         conn.execute(schema)
 
 
-def get_latest_snapshots() -> list[SnapshotRow]:
+def get_latest_run() -> tuple[int, datetime] | None:
+    """Id and timestamp of the most recent successful scrape run.
+
+    Snapshot and holdings reads take the run id as a parameter so one page
+    render never mixes data from two runs (a scrape may commit in between).
+    """
+    sql = """
+        SELECT id, scraped_at FROM scrape_runs
+        WHERE status = 'ok'
+        ORDER BY scraped_at DESC
+        LIMIT 1
+    """
+    with get_connection() as conn:
+        row = conn.execute(sql).fetchone()
+    return (row["id"], row["scraped_at"]) if row else None
+
+
+def get_snapshots(run_id: int) -> list[SnapshotRow]:
     sql = """
         SELECT
             s.ticker,
@@ -44,21 +62,16 @@ def get_latest_snapshots() -> list[SnapshotRow]:
             s.scraped_at
         FROM snapshots s
         JOIN products p ON p.ticker = s.ticker
-        WHERE s.scrape_run_id = (
-            SELECT id FROM scrape_runs
-            WHERE status = 'ok'
-            ORDER BY scraped_at DESC
-            LIMIT 1
-        )
+        WHERE s.scrape_run_id = %s
         ORDER BY s.ticker
     """
     with get_connection() as conn:
-        rows = conn.execute(sql).fetchall()
+        rows = conn.execute(sql, (run_id,)).fetchall()
 
     return [SnapshotRow(**row) for row in rows]
 
 
-def get_latest_holdings() -> list[HoldingRow]:
+def get_holdings(run_id: int) -> list[HoldingRow]:
     sql = """
         SELECT
             owner_ticker,
@@ -70,22 +83,10 @@ def get_latest_holdings() -> list[HoldingRow]:
             category_name,
             scraped_at
         FROM holdings
-        WHERE scrape_run_id = (
-            SELECT id FROM scrape_runs
-            WHERE status = 'ok'
-            ORDER BY scraped_at DESC
-            LIMIT 1
-        )
+        WHERE scrape_run_id = %s
         ORDER BY owner_ticker, value DESC
     """
     with get_connection() as conn:
-        rows = conn.execute(sql).fetchall()
+        rows = conn.execute(sql, (run_id,)).fetchall()
 
     return [HoldingRow(**row) for row in rows]
-
-
-def get_latest_scrape_time() -> str | None:
-    sql = "SELECT scraped_at FROM scrape_runs WHERE status = 'ok' ORDER BY scraped_at DESC LIMIT 1"
-    with get_connection() as conn:
-        row = conn.execute(sql).fetchone()
-    return str(row["scraped_at"]) if row else None

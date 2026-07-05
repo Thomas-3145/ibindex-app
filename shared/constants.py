@@ -24,4 +24,8 @@ NASDAQ_LIST: dict[str, str] = {
     "SON": "Euronext Lisbon",
 }
 
-LISTS = ["Large Cap", "Mid Cap", "Small Cap", "First North", "Euronext Lisbon"]
+# Fallback for tickers ibindex adds before this map is updated — without
+# it new companies would silently vanish from the app.
+UNKNOWN_LIST = "Okänd lista"
+
+LISTS = ["Large Cap", "Mid Cap", "Small Cap", "First North", "Euronext Lisbon", UNKNOWN_LIST]
