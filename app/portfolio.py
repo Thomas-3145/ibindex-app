@@ -11,15 +11,35 @@ class WeightingMethod(Enum):
     EQUAL = "Likaviktat"
 
 
+class InfeasibleCapError(ValueError):
+    """Raised when too few companies are selected for the requested cap."""
+
+    def __init__(self, cap_pct: float, company_count: int) -> None:
+        self.cap_pct = cap_pct
+        self.company_count = company_count
+        self.minimum_cap_pct = 100.0 / company_count
+        super().__init__(
+            f"A {cap_pct:g}% cap is infeasible for {company_count} companies; "
+            f"the minimum is {self.minimum_cap_pct:.2f}%"
+        )
+
+
 def allocate(
     snapshots: list[SnapshotRow],
     capital: float,
     method: WeightingMethod = WeightingMethod.MARKET_CAP,
     cap: float = 20.0,
 ) -> list[AllocationResult]:
-    # Companies without market-cap data are excluded from every method,
-    # including EQUAL, so all methods allocate over the same universe.
-    eligible = [s for s in snapshots if s.market_cap_weight and s.price > 0]
+    if not math.isfinite(capital) or capital <= 0:
+        raise ValueError("capital must be a positive finite amount")
+
+    # Equal weighting does not depend on Yahoo Finance data. The other
+    # methods require a positive market-cap weight to produce a valid ratio.
+    eligible = [
+        s
+        for s in snapshots
+        if s.price > 0 and (method == WeightingMethod.EQUAL or (s.market_cap_weight or 0) > 0)
+    ]
 
     if not eligible:
         return []
@@ -27,22 +47,46 @@ def allocate(
     raw_weights = _compute_weights(eligible, method, cap)
 
     total = sum(raw_weights.values())
+    normalized_weights = [raw_weights[s.ticker] / total for s in eligible]
+    target_amounts = _round_to_total([capital * weight for weight in normalized_weights], capital)
+    display_weights = _round_to_total([weight * 100 for weight in normalized_weights], 100.0)
+
     results = []
-    for s in eligible:
-        w = raw_weights[s.ticker]
-        allocated_sek = capital * (w / total)
+    for s, target_sek, weight_pct in zip(eligible, target_amounts, display_weights, strict=True):
+        shares = math.floor(target_sek / s.price)
+        invested_sek = round(shares * s.price, 2)
         results.append(
             AllocationResult(
                 ticker=s.ticker,
                 product_name=s.product_name,
                 price=s.price,
-                weight=round(w / total * 100, 2),
-                allocated_sek=round(allocated_sek, 2),
-                approx_shares=round(allocated_sek / s.price, 4),
+                weight=weight_pct,
+                target_sek=target_sek,
+                allocated_sek=invested_sek,
+                shares=shares,
             )
         )
 
     return sorted(results, key=lambda r: r.weight, reverse=True)
+
+
+def _round_to_total(values: list[float], total: float) -> list[float]:
+    """Round non-negative values to cents while preserving the rounded total."""
+    if not values:
+        return []
+
+    exact_cents = [value * 100 for value in values]
+    cents = [math.floor(value + 1e-9) for value in exact_cents]
+    remaining = round(total * 100) - sum(cents)
+    by_largest_remainder = sorted(
+        range(len(values)),
+        key=lambda index: exact_cents[index] - cents[index],
+        reverse=True,
+    )
+    for index in by_largest_remainder[:remaining]:
+        cents[index] += 1
+
+    return [value / 100 for value in cents]
 
 
 def _compute_weights(
@@ -68,8 +112,14 @@ def _compute_weights(
 
 
 def premium_pct(snapshot: SnapshotRow) -> float | None:
-    """Premium (positive) or discount (negative) vs NAV, in percent."""
-    nav = snapshot.nav or snapshot.nav_calculated
+    """Premium (positive) or discount (negative) vs current estimated NAV.
+
+    ibindex's ``netAssetValueRebatePremium`` uses the opposite convention:
+    positive means discount. Calculating from price and the estimated NAV
+    keeps this app's public convention explicit. Reported NAV is used only
+    when the estimated value is unavailable.
+    """
+    nav = snapshot.nav_calculated or snapshot.nav
     if not nav or nav <= 0:
         return None
     return (snapshot.price - nav) / nav * 100
@@ -81,7 +131,7 @@ def expand_allocations(
     holdings: list[HoldingRow],
     expand_all: bool = False,
     premium_threshold: float = 0.0,
-) -> tuple[list[UnderlyingAllocation], list[tuple[str, float]]]:
+) -> tuple[list[UnderlyingAllocation], list[tuple[str, float]], list[str]]:
     """Replace investment companies with their listed holdings.
 
     With expand_all=False only companies trading above `premium_threshold`
@@ -91,8 +141,10 @@ def expand_allocations(
     implicitly spreads the unlisted part proportionally. Expansion is one
     level deep: a holding that is itself an investment company is kept as-is.
 
-    Returns the expanded allocations plus, for premium-based expansion,
-    the (product_name, premium_pct) of each company that was replaced.
+    Returns the expanded allocations; for premium-based expansion, the
+    (product_name, premium_pct) of each company that was replaced; and the
+    names of companies that should have been expanded but lack listed
+    holdings data.
     """
     snap_by_ticker = {s.ticker: s for s in snapshots}
 
@@ -115,16 +167,19 @@ def expand_allocations(
                 entry.via.append(via)
 
     replaced: list[tuple[str, float]] = []
+    unavailable: list[str] = []
     for r in results:
         listed = listed_by_owner.get(r.ticker, [])
-        should_expand = bool(listed)
-        if not expand_all:
-            snapshot = snap_by_ticker.get(r.ticker)
-            premium = premium_pct(snapshot) if snapshot else None
-            should_expand = bool(listed) and premium is not None and premium > premium_threshold
-            if should_expand:
-                assert premium is not None
-                replaced.append((r.product_name, premium))
+        snapshot = snap_by_ticker.get(r.ticker)
+        premium = premium_pct(snapshot) if snapshot else None
+        wants_expansion = expand_all or (premium is not None and premium > premium_threshold)
+        should_expand = wants_expansion and bool(listed)
+
+        if wants_expansion and not listed:
+            unavailable.append(r.product_name)
+        elif should_expand and not expand_all:
+            assert premium is not None
+            replaced.append((r.product_name, premium))
 
         if not should_expand:
             add(r.ticker, r.product_name, r.ticker, r.allocated_sek, "Direkt")
@@ -140,15 +195,28 @@ def expand_allocations(
                 r.product_name,
             )
 
-    total = sum(e.allocated_sek for e in merged.values())
+    invested_total = sum(e.allocated_sek for e in merged.values())
+    portfolio_capital = sum(r.target_sek for r in results)
     entries = sorted(merged.values(), key=lambda e: e.allocated_sek, reverse=True)
-    for e in entries:
-        e.weight = round(e.allocated_sek / total * 100, 2)
-        e.allocated_sek = round(e.allocated_sek, 2)
-    return entries, replaced
+    rounded_amounts = _round_to_total([e.allocated_sek for e in entries], invested_total)
+    invested_weight = invested_total / portfolio_capital * 100
+    rounded_weights = _round_to_total(
+        [e.allocated_sek / portfolio_capital * 100 for e in entries], invested_weight
+    )
+    for e, amount, weight in zip(entries, rounded_amounts, rounded_weights, strict=True):
+        e.weight = weight
+        e.allocated_sek = amount
+    return entries, replaced, unavailable
 
 
 def _apply_cap(weights: dict[str, float], cap_pct: float) -> dict[str, float]:
+    if not weights:
+        return {}
+    if not 0 < cap_pct <= 100:
+        raise ValueError("cap_pct must be greater than 0 and at most 100")
+    if cap_pct * len(weights) < 100 - 1e-9:
+        raise InfeasibleCapError(cap_pct, len(weights))
+
     total = sum(weights.values())
     cap = cap_pct / 100 * total
     result = dict(weights)
@@ -168,8 +236,6 @@ def _apply_cap(weights: dict[str, float], cap_pct: float) -> dict[str, float]:
 
         free_total = sum(w for t, w in result.items() if t not in capped)
         if free_total == 0:
-            # Infeasible cap: everything sits at the cap; normalization in
-            # allocate() turns this into an equal weighting.
             break
         for t in result:
             if t not in capped:

@@ -52,7 +52,8 @@ ibindex-app/
 - Hämtar pris, NAV, premie/rabatt och innehav för bolagen i ibindex från ibindex.se
 - Beräknar marknadsvärdesvikter via Yahoo Finance (med valutakonvertering för utländska noteringar)
 - Föreslår allokering med fyra viktningsmetoder (marknadsviktat, logaritmiskt, med tak, likaviktat)
-- Premie/rabatt-logik: bolag som handlas över substansvärdet kan ersättas med sina noterade innehav (valbar tröskel)
+- Räknar fram köpbara heltalsaktier och visar kapitalet som blir kvar i kassa
+- Premie/rabatt-logik mot beräknat aktuellt substansvärde: premiebolag kan ersättas med sina noterade innehav (valbar tröskel)
 - Genomlysningsvy: hela portföljen uttryckt i underliggande bolag istället för investmentbolag
 - Presentation som tabell, cirkeldiagram eller stapeldiagram
 - Sparar historik i databasen vid varje daglig scrape
@@ -90,10 +91,10 @@ uv sync
 
 ```bash
 # Hämta data från ibindex.se och Yahoo Finance
-python -m scraper.main
+uv run --env-file .env python -m scraper.main
 
 # Starta appen
-streamlit run app/main.py
+uv run --env-file .env streamlit run app/main.py
 ```
 
 ### Tester

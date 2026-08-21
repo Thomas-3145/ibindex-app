@@ -79,8 +79,9 @@ class AllocationResult(BaseModel):
     product_name: str
     price: float
     weight: float
+    target_sek: float
     allocated_sek: float
-    approx_shares: float
+    shares: int
 
 
 class UnderlyingAllocation(BaseModel):

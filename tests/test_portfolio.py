@@ -1,6 +1,16 @@
+import math
 from datetime import UTC
 
-from app.portfolio import WeightingMethod, _apply_cap, allocate, expand_allocations, premium_pct
+import pytest
+
+from app.portfolio import (
+    InfeasibleCapError,
+    WeightingMethod,
+    _apply_cap,
+    allocate,
+    expand_allocations,
+    premium_pct,
+)
 from shared.models import HoldingRow, SnapshotRow
 
 
@@ -21,23 +31,40 @@ def test_allocate_includes_weighted_companies(sample_snapshots: list[SnapshotRow
 def test_allocate_sums_to_capital(sample_snapshots: list[SnapshotRow]) -> None:
     capital = 100_000.0
     results = allocate(sample_snapshots, capital)
-    total = sum(r.allocated_sek for r in results)
-    assert abs(total - capital) < 0.01
+    invested = sum(r.allocated_sek for r in results)
+    assert invested <= capital
+    assert round(sum(r.target_sek for r in results), 2) == capital
+
+
+def test_allocate_preserves_odd_capital_to_the_cent(
+    sample_snapshots: list[SnapshotRow],
+) -> None:
+    capital = 100_000.01
+    results = allocate(sample_snapshots, capital, method=WeightingMethod.EQUAL)
+
+    assert round(sum(r.target_sek for r in results), 2) == capital
+    assert round(sum(r.weight for r in results), 2) == 100.0
+
+
+def test_allocate_rejects_invalid_capital(sample_snapshots: list[SnapshotRow]) -> None:
+    with pytest.raises(ValueError, match="capital"):
+        allocate(sample_snapshots, 0)
 
 
 def test_allocate_proportional_to_weight(sample_snapshots: list[SnapshotRow]) -> None:
     results = allocate(sample_snapshots, 100_000)
     by_ticker = {r.ticker: r for r in results}
     # INVE B market_cap_weight 45.0, BURE 20.0 → ratio should be 2.25
-    ratio = by_ticker["INVE B"].allocated_sek / by_ticker["BURE"].allocated_sek
+    ratio = by_ticker["INVE B"].target_sek / by_ticker["BURE"].target_sek
     assert abs(ratio - (45.0 / 20.0)) < 0.01
 
 
-def test_allocate_approx_shares(sample_snapshots: list[SnapshotRow]) -> None:
+def test_allocate_returns_buyable_whole_shares(sample_snapshots: list[SnapshotRow]) -> None:
     results = allocate(sample_snapshots, 100_000)
     for r in results:
-        expected = r.allocated_sek / r.price
-        assert abs(r.approx_shares - expected) < 0.001
+        assert r.shares == math.floor(r.target_sek / r.price)
+        assert r.allocated_sek == round(r.shares * r.price, 2)
+        assert r.allocated_sek <= r.target_sek
 
 
 def test_allocate_sorted_by_weight_descending(sample_snapshots: list[SnapshotRow]) -> None:
@@ -52,9 +79,9 @@ def test_allocate_empty_snapshots() -> None:
 
 def test_equal_weighting_allocates_evenly(sample_snapshots: list[SnapshotRow]) -> None:
     results = allocate(sample_snapshots, 90_000, method=WeightingMethod.EQUAL)
-    assert len(results) == 3
+    assert len(results) == 4
     for r in results:
-        assert abs(r.allocated_sek - 30_000) < 0.01
+        assert abs(r.target_sek - 22_500) < 0.01
 
 
 def test_log_weighting_less_concentrated_but_same_order(
@@ -83,7 +110,7 @@ def test_capped_weighting_respects_cap(sample_snapshots: list[SnapshotRow]) -> N
 def test_capped_weighting_sums_to_capital(sample_snapshots: list[SnapshotRow]) -> None:
     capital = 100_000.0
     results = allocate(sample_snapshots, capital, method=WeightingMethod.CAPPED, cap=40.0)
-    assert abs(sum(r.allocated_sek for r in results) - capital) < 0.01
+    assert round(sum(r.target_sek for r in results), 2) == capital
 
 
 def test_apply_cap_cascading_redistribution() -> None:
@@ -94,10 +121,12 @@ def test_apply_cap_cascading_redistribution() -> None:
     assert abs(result["C"] - 30.0) < 1e-9
 
 
-def test_apply_cap_infeasible_cap_degrades_to_equal() -> None:
-    # 3 tickers with a 30% cap cannot sum to 100% — everything ends at the cap
-    result = _apply_cap({"A": 60.0, "B": 25.0, "C": 15.0}, 30.0)
-    assert all(abs(w - 30.0) < 1e-9 for w in result.values())
+def test_apply_cap_rejects_infeasible_cap() -> None:
+    with pytest.raises(InfeasibleCapError) as exc_info:
+        _apply_cap({"A": 60.0, "B": 25.0, "C": 15.0}, 30.0)
+
+    assert exc_info.value.company_count == 3
+    assert abs(exc_info.value.minimum_cap_pct - 100 / 3) < 1e-9
 
 
 def test_apply_cap_noop_when_under_cap() -> None:
@@ -128,7 +157,7 @@ def test_allocate_all_without_weight() -> None:
 
 
 # --- premium expansion / look-through ---
-# Fixture premiums: INVE B +7.14%, KINV B +7.14%, BURE -4.76% (discount)
+# Estimated-NAV premiums: INVE B +5.26%, KINV B +3.45%, BURE -6.98% (discount)
 
 
 def test_premium_pct_sign(sample_snapshots: list[SnapshotRow]) -> None:
@@ -140,12 +169,22 @@ def test_premium_pct_sign(sample_snapshots: list[SnapshotRow]) -> None:
     assert bure is not None and bure < 0  # trades below NAV
 
 
+def test_premium_pct_prefers_current_estimated_nav(
+    sample_snapshots: list[SnapshotRow],
+) -> None:
+    snapshot = sample_snapshots[0].model_copy(update={"nav": 250.0, "nav_calculated": 350.0})
+
+    premium = premium_pct(snapshot)
+
+    assert premium is not None and premium < 0
+
+
 def test_expand_replaces_premium_companies_only(
     sample_snapshots: list[SnapshotRow], sample_holdings: list[HoldingRow]
 ) -> None:
 
     results = allocate(sample_snapshots, 100_000)
-    expanded, _ = expand_allocations(results, sample_snapshots, sample_holdings)
+    expanded, _, _ = expand_allocations(results, sample_snapshots, sample_holdings)
     names = {e.name for e in expanded}
     assert "Atlas Copco A" in names and "Tele2 B" in names
     assert "Investor B" not in names and "Kinnevik B" not in names
@@ -157,7 +196,7 @@ def test_expand_excludes_unlisted_and_debt(
 ) -> None:
 
     results = allocate(sample_snapshots, 100_000)
-    expanded, _ = expand_allocations(results, sample_snapshots, sample_holdings)
+    expanded, _, _ = expand_allocations(results, sample_snapshots, sample_holdings)
     names = {e.name for e in expanded}
     assert "Mölnlycke" not in names
     assert "Nettoskuld" not in names
@@ -168,8 +207,11 @@ def test_expand_preserves_capital(
 ) -> None:
 
     results = allocate(sample_snapshots, 100_000)
-    expanded, _ = expand_allocations(results, sample_snapshots, sample_holdings)
-    assert abs(sum(e.allocated_sek for e in expanded) - 100_000) < 0.05
+    expanded, _, _ = expand_allocations(results, sample_snapshots, sample_holdings)
+    invested = round(sum(r.allocated_sek for r in results), 2)
+    cash = round(100_000 - invested, 2)
+    assert round(sum(e.allocated_sek for e in expanded), 2) == invested
+    assert round(sum(e.weight for e in expanded) + cash / 100_000 * 100, 2) == 100.0
 
 
 def test_expand_aggregates_shared_holdings(
@@ -178,7 +220,7 @@ def test_expand_aggregates_shared_holdings(
 
     results = allocate(sample_snapshots, 100_000)
     by_ticker = {r.ticker: r for r in results}
-    expanded, _ = expand_allocations(results, sample_snapshots, sample_holdings)
+    expanded, _, _ = expand_allocations(results, sample_snapshots, sample_holdings)
     abb = next(e for e in expanded if e.name == "ABB")
     # ABB via both owners: 300/900 of Investor's + 100/200 of Kinnevik's allocation
     expected = by_ticker["INVE B"].allocated_sek * (300 / 900) + by_ticker[
@@ -193,7 +235,7 @@ def test_expand_respects_threshold(
 ) -> None:
 
     results = allocate(sample_snapshots, 100_000)
-    expanded, replaced = expand_allocations(
+    expanded, replaced, _ = expand_allocations(
         results, sample_snapshots, sample_holdings, premium_threshold=10.0
     )
     # both premiums are ~7.14% < 10% -> nothing expanded
@@ -206,7 +248,7 @@ def test_expand_reports_replaced_companies(
     sample_snapshots: list[SnapshotRow], sample_holdings: list[HoldingRow]
 ) -> None:
     results = allocate(sample_snapshots, 100_000)
-    _, replaced = expand_allocations(results, sample_snapshots, sample_holdings)
+    _, replaced, _ = expand_allocations(results, sample_snapshots, sample_holdings)
     names = {name for name, _ in replaced}
     assert names == {"Investor B", "Kinnevik B"}
     assert all(premium > 0 for _, premium in replaced)
@@ -218,9 +260,10 @@ def test_expand_keeps_premium_company_without_holdings(
 
     without_kinv = [h for h in sample_holdings if h.owner_ticker != "KINV B"]
     results = allocate(sample_snapshots, 100_000)
-    expanded, _ = expand_allocations(results, sample_snapshots, without_kinv)
+    expanded, _, unavailable = expand_allocations(results, sample_snapshots, without_kinv)
     kinv = next(e for e in expanded if e.name == "Kinnevik B")
     assert kinv.via == ["Direkt"]
+    assert unavailable == ["Kinnevik B"]
 
 
 def test_expand_all_is_full_look_through(
@@ -228,7 +271,24 @@ def test_expand_all_is_full_look_through(
 ) -> None:
 
     results = allocate(sample_snapshots, 100_000)
-    expanded, _ = expand_allocations(results, sample_snapshots, sample_holdings, expand_all=True)
+    expanded, _, unavailable = expand_allocations(
+        results, sample_snapshots, sample_holdings, expand_all=True
+    )
     names = {e.name for e in expanded}
     assert "Vitrolife" in names  # BURE expanded despite discount
     assert "Bure Equity" not in names
+    assert unavailable == []
+
+
+def test_expand_all_reports_missing_listed_holdings(
+    sample_snapshots: list[SnapshotRow], sample_holdings: list[HoldingRow]
+) -> None:
+    results = allocate(sample_snapshots, 100_000)
+    without_bure = [h for h in sample_holdings if h.owner_ticker != "BURE"]
+
+    expanded, _, unavailable = expand_allocations(
+        results, sample_snapshots, without_bure, expand_all=True
+    )
+
+    assert "Bure Equity" in {e.name for e in expanded}
+    assert unavailable == ["Bure Equity"]

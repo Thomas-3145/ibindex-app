@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 
 import requests
 import yfinance as yf  # type: ignore[import-untyped]
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from shared.db import get_connection, init_db
 from shared.models import HoldingResponse, ProductResponse, WeightResponse
@@ -12,11 +14,33 @@ PRODUCTS_URL = "https://ibindex.se/ibi/index/getProducts.req"
 WEIGHTS_URL = "https://ibindex.se/ibi/index/getProductWeights.req"
 HOLDINGS_URL = "https://ibindex.se/ibi/company/getHoldings.req"
 TIMEOUT = 10
+MINIMUM_COVERAGE = 0.5
 
 # Companies not listed on Nasdaq Stockholm, where the ".ST" rule fails.
 YAHOO_TICKER_OVERRIDES = {
     "SON": "SON.LS",  # Sonae, SGPS — Euronext Lisbon
 }
+
+
+def _build_http_session() -> requests.Session:
+    """Create a session that retries transient failures from the ibindex API."""
+    retry = Retry(
+        total=3,
+        connect=3,
+        read=3,
+        status=3,
+        backoff_factor=0.5,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET", "POST"}),
+        respect_retry_after_header=True,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session = requests.Session()
+    session.mount("https://", adapter)
+    return session
+
+
+HTTP = _build_http_session()
 
 
 def to_yahoo_ticker(ibindex_ticker: str) -> str:
@@ -27,13 +51,13 @@ def to_yahoo_ticker(ibindex_ticker: str) -> str:
 
 
 def fetch_products() -> list[ProductResponse]:
-    response = requests.get(PRODUCTS_URL, timeout=TIMEOUT)
+    response = HTTP.get(PRODUCTS_URL, timeout=TIMEOUT)
     response.raise_for_status()
     return [ProductResponse.model_validate(item) for item in response.json()]
 
 
 def fetch_weights() -> dict[str, float]:
-    response = requests.get(WEIGHTS_URL, timeout=TIMEOUT)
+    response = HTTP.get(WEIGHTS_URL, timeout=TIMEOUT)
     response.raise_for_status()
     data = response.json()
     if not data:
@@ -45,7 +69,7 @@ def fetch_weights() -> dict[str, float]:
 def fetch_holdings(ticker: str) -> list[HoldingResponse]:
     # The ibindex API expects the ticker as a JSON-encoded string body and
     # rejects plain "application/json" — the charset suffix is required.
-    response = requests.post(
+    response = HTTP.post(
         HOLDINGS_URL,
         data=json.dumps(ticker),
         headers={"Content-Type": "application/json;charset=UTF-8"},
@@ -87,6 +111,16 @@ def fetch_market_cap_weights(products: list[ProductResponse]) -> dict[str, float
     return {ticker: (cap / total) * 100 for ticker, cap in market_caps.items()}
 
 
+def require_minimum_coverage(label: str, successful: int, total: int) -> None:
+    """Reject a dataset that would make a major app feature misleading."""
+    if total <= 0:
+        raise RuntimeError(f"{label}: source returned no companies")
+    if successful < total * MINIMUM_COVERAGE:
+        raise RuntimeError(
+            f"{label} available for only {successful} of {total} companies — aborting run"
+        )
+
+
 def main() -> None:
     init_db()
 
@@ -94,6 +128,8 @@ def main() -> None:
 
     try:
         products = fetch_products()
+        if not products:
+            raise RuntimeError("ibindex returned no products — aborting run")
         weights = fetch_weights()
 
         print("Hämtar marknadsvärden från Yahoo Finance...")
@@ -102,22 +138,21 @@ def main() -> None:
 
         # A broken yfinance integration would otherwise record an 'ok' run
         # with no weights, silently emptying the app's allocation view.
-        if len(market_cap_weights) < len(products) / 2:
-            raise RuntimeError(
-                f"Market cap weights for only {len(market_cap_weights)} of "
-                f"{len(products)} companies — aborting run"
-            )
+        require_minimum_coverage("Market cap weights", len(market_cap_weights), len(products))
 
         print("Hämtar innehav från ibindex.se...")
         # One flaky request should cost that company's holdings, not the
         # whole evening's snapshot.
         holdings: dict[str, list[HoldingResponse]] = {}
+        holdings_fetches_ok = 0
         for p in products:
             try:
                 holdings[p.ticker] = fetch_holdings(p.ticker)
+                holdings_fetches_ok += 1
             except Exception as exc:
                 print(f"Holdings fetch failed for {p.ticker}: {exc}", file=sys.stderr)
                 holdings[p.ticker] = []
+        require_minimum_coverage("Holdings", holdings_fetches_ok, len(products))
         print(f"Innehav hämtade för {sum(1 for h in holdings.values() if h)} bolag")
 
         with get_connection() as conn, conn.cursor() as cur:

@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 import streamlit as st
 
 from app.charts import bars, donut
-from app.portfolio import WeightingMethod, allocate, expand_allocations
+from app.portfolio import InfeasibleCapError, WeightingMethod, allocate, expand_allocations
 from shared.constants import LISTS, NASDAQ_LIST, UNKNOWN_LIST
 from shared.db import get_holdings, get_latest_run, get_snapshots
 from shared.models import HoldingRow, SnapshotRow
@@ -122,11 +122,27 @@ if age > timedelta(hours=72):
 
 # --- Portfolio ---
 filtered = [s for s in snapshots if NASDAQ_LIST.get(s.ticker, UNKNOWN_LIST) in selected_lists]
-results = allocate(filtered, float(capital), method=method, cap=float(cap))
+try:
+    results = allocate(filtered, float(capital), method=method, cap=float(cap))
+except InfeasibleCapError as exc:
+    st.warning(
+        f"Ett tak på {exc.cap_pct:g} % är inte möjligt med "
+        f"{exc.company_count} valbara bolag. Höj taket till minst "
+        f"{exc.minimum_cap_pct:.1f} %, välj fler listor eller byt viktningsmetod."
+    )
+    st.stop()
 
 if not results:
     st.info("Inga bolag med vikter hittades i datan.")
     st.stop()
+
+invested_total = round(sum(r.allocated_sek for r in results), 2)
+cash = round(float(capital) - invested_total, 2)
+cash_weight = cash / float(capital) * 100
+
+invested_col, cash_col = st.columns(2)
+invested_col.metric("Investerat", f"{invested_total:,.0f} SEK")
+cash_col.metric("Kvar i kassa", f"{cash:,.0f} SEK")
 
 # --- Holdings-based views ---
 if view != VIEW_COMPANIES and not holdings:
@@ -139,15 +155,31 @@ if view == VIEW_COMPANIES:
             "Ticker": r.ticker,
             "Bolag": r.product_name,
             "Pris (SEK)": f"{r.price:,.2f}",
-            "Vikt (%)": f"{r.weight:.2f}",
-            "Allokering (SEK)": f"{r.allocated_sek:,.0f}",
-            "Ungefär antal aktier": f"{r.approx_shares:.2f}",
+            "Målvikt (%)": f"{r.weight:.2f}",
+            "Målbelopp (SEK)": f"{r.target_sek:,.0f}",
+            "Antal aktier": f"{r.shares:,}",
+            "Investerat (SEK)": f"{r.allocated_sek:,.2f}",
+            "Faktisk vikt (%)": f"{r.allocated_sek / float(capital) * 100:.2f}",
         }
         for r in results
     ]
-    chart_rows = [(r.product_name, r.allocated_sek, r.weight) for r in results]
+    table_data.append(
+        {
+            "Ticker": "—",
+            "Bolag": "Kassa",
+            "Pris (SEK)": "—",
+            "Målvikt (%)": "—",
+            "Målbelopp (SEK)": "—",
+            "Antal aktier": "—",
+            "Investerat (SEK)": f"{cash:,.2f}",
+            "Faktisk vikt (%)": f"{cash_weight:.2f}",
+        }
+    )
+    chart_rows = [
+        (r.product_name, r.allocated_sek, r.allocated_sek / float(capital) * 100) for r in results
+    ]
 else:
-    expanded, replaced = expand_allocations(
+    expanded, replaced, unavailable = expand_allocations(
         results,
         filtered,
         holdings,
@@ -158,12 +190,21 @@ else:
         {
             "Ticker": e.ticker or "—",
             "Bolag": e.name,
-            "Vikt (%)": f"{e.weight:.2f}",
-            "Allokering (SEK)": f"{e.allocated_sek:,.0f}",
+            "Faktisk vikt (%)": f"{e.weight:.2f}",
+            "Investerat (SEK)": f"{e.allocated_sek:,.2f}",
             "Via": ", ".join(e.via),
         }
         for e in expanded
     ]
+    table_data.append(
+        {
+            "Ticker": "—",
+            "Bolag": "Kassa",
+            "Faktisk vikt (%)": f"{cash_weight:.2f}",
+            "Investerat (SEK)": f"{cash:,.2f}",
+            "Via": "Ej investerat",
+        }
+    )
     chart_rows = [(e.name, e.allocated_sek, e.weight) for e in expanded]
 
     if view == VIEW_PREMIUM and replaced:
@@ -171,6 +212,14 @@ else:
             "Ersatta premiebolag: "
             + ", ".join(f"{name} (+{premium:.1f} %)" for name, premium in replaced)
         )
+    if unavailable:
+        st.warning(
+            "Kan inte genomlysa följande bolag eftersom noterade innehav saknas: "
+            + ", ".join(unavailable)
+            + ". De visas därför som direktägda."
+        )
+
+chart_rows.append(("Kassa", cash, cash_weight))
 
 # --- Presentation ---
 st.subheader(f"Allokering — {capital:,.0f} SEK")
@@ -192,7 +241,8 @@ else:
 # --- Companies without weights ---
 no_weight = [s for s in filtered if not s.market_cap_weight]
 if no_weight:
-    with st.expander(f"{len(no_weight)} bolag saknar vikter (ingår ej i allokeringen)"):
+    suffix = "men ingår i likaviktningen" if method == WeightingMethod.EQUAL else "och ingår inte"
+    with st.expander(f"{len(no_weight)} bolag saknar marknadsvikt ({suffix})"):
         rows = [
             {"Ticker": s.ticker, "Bolag": s.product_name, "Pris (SEK)": f"{s.price:,.2f}"}
             for s in no_weight
