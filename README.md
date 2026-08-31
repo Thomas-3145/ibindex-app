@@ -53,6 +53,7 @@ ibindex-app/
 - Beräknar marknadsvärdesvikter via Yahoo Finance (med valutakonvertering för utländska noteringar)
 - Föreslår allokering med fyra viktningsmetoder (marknadsviktat, logaritmiskt, med tak, likaviktat)
 - Räknar fram köpbara heltalsaktier och visar kapitalet som blir kvar i kassa
+- Val av aktieslag för bolag noterade i två klasser (INVE A/B, INDU A/C, KINV A/B, SVOL A/B): följ ibindex, ta automatiskt det billigaste, eller välj per bolag — med jämförelsetabell över spreaden och varning för tunt handlade klasser
 - Premie/rabatt-logik mot beräknat aktuellt substansvärde: premiebolag kan ersättas med sina noterade innehav (valbar tröskel)
 - Genomlysningsvy: hela portföljen uttryckt i underliggande bolag istället för investmentbolag
 - Presentation som tabell, cirkeldiagram eller stapeldiagram
@@ -107,8 +108,8 @@ uv run pytest
 
 ## Datakällor
 
-- **[ibindex.se](https://ibindex.se)** — pris, NAV och premie/rabatt för 21 svenska investmentbolag
-- **Yahoo Finance** (via yfinance) — antal utestående aktier för marknadsvärdesberäkning
+- **[ibindex.se](https://ibindex.se)** — pris, NAV och premie/rabatt för 20 svenska investmentbolag
+- **Yahoo Finance** (via yfinance) — börsvärde för marknadsviktningen samt priser för alternativa aktieslag
 
 ---
 

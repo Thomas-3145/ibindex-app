@@ -1,7 +1,15 @@
 import math
 from enum import Enum
 
-from shared.models import AllocationResult, HoldingRow, SnapshotRow, UnderlyingAllocation
+from shared.constants import MIN_SHARE_CLASS_VOLUME
+from shared.models import (
+    AllocationResult,
+    HoldingRow,
+    ShareClassComparison,
+    ShareClassRow,
+    SnapshotRow,
+    UnderlyingAllocation,
+)
 
 
 class WeightingMethod(Enum):
@@ -242,3 +250,122 @@ def _apply_cap(weights: dict[str, float], cap_pct: float) -> dict[str, float]:
                 result[t] += excess * (result[t] / free_total)
 
     return result
+
+
+# --- Share classes ---------------------------------------------------------
+# ibindex quotes one class per company, but several are listed in two (INVE
+# A/B, INDU A/C, KINV A/B, SVOL A/B). The classes carry identical economic
+# rights, so buying the cheaper one is more NAV per krona at no cost beyond
+# voting power the passive owner was never going to use.
+
+
+def _class_suffix(ticker: str) -> str:
+    """The share class letter of a ticker: 'INVE B' -> 'B', 'BURE' -> ''."""
+    head, _, tail = ticker.rpartition(" ")
+    return tail if head else ""
+
+
+def _class_display_name(product_name: str, base_ticker: str, chosen_ticker: str) -> str:
+    """Rename 'Investor B' to 'Investor A' when the A class is chosen."""
+    stem = product_name
+    base_suffix = _class_suffix(base_ticker)
+    if base_suffix and stem.endswith(f" {base_suffix}"):
+        stem = stem[: -len(base_suffix) - 1]
+    chosen_suffix = _class_suffix(chosen_ticker)
+    return f"{stem} {chosen_suffix}" if chosen_suffix else stem
+
+
+def compare_share_classes(
+    snapshots: list[SnapshotRow],
+    share_classes: list[ShareClassRow],
+    minimum_volume: float = MIN_SHARE_CLASS_VOLUME,
+) -> list[ShareClassComparison]:
+    """Cheapest vs priciest listed class per company, most actionable first.
+
+    Only companies whose snapshot is present are compared, so the list
+    follows whatever exchange-list filter the user has applied.
+    """
+    names = {s.ticker: s.product_name for s in snapshots}
+
+    by_base: dict[str, list[ShareClassRow]] = {}
+    for sc in share_classes:
+        if sc.base_ticker in names and sc.price > 0:
+            by_base.setdefault(sc.base_ticker, []).append(sc)
+
+    comparisons = []
+    for base_ticker, classes in by_base.items():
+        if len(classes) < 2:
+            continue
+        ordered = sorted(classes, key=lambda c: c.price)
+        cheapest, priciest = ordered[0], ordered[-1]
+        comparisons.append(
+            ShareClassComparison(
+                base_ticker=base_ticker,
+                product_name=names[base_ticker],
+                cheapest_ticker=cheapest.ticker,
+                cheapest_price=cheapest.price,
+                priciest_ticker=priciest.ticker,
+                priciest_price=priciest.price,
+                spread_pct=(priciest.price - cheapest.price) / cheapest.price * 100,
+                illiquid=any((c.avg_volume or 0) < minimum_volume for c in classes),
+            )
+        )
+
+    # Liquid comparisons first, then by spread. A thinly traded class shows a
+    # huge spread precisely because its quote is stale, so ranking on spread
+    # alone would put the one unusable row at the top of the table.
+    return sorted(comparisons, key=lambda c: (c.illiquid, -c.spread_pct))
+
+
+def cheapest_share_classes(
+    share_classes: list[ShareClassRow],
+    minimum_volume: float = MIN_SHARE_CLASS_VOLUME,
+) -> dict[str, str]:
+    """Pick the cheapest class per company, ignoring illiquid listings.
+
+    A class that barely trades (SVOL A: 41 shares a day) carries a stale
+    last price, so its apparent discount is an artefact rather than an
+    opportunity — and a market order there would move the price anyway.
+    """
+    tradeable: dict[str, ShareClassRow] = {}
+    for sc in share_classes:
+        if sc.price <= 0 or (sc.avg_volume or 0) < minimum_volume:
+            continue
+        best = tradeable.get(sc.base_ticker)
+        if best is None or sc.price < best.price:
+            tradeable[sc.base_ticker] = sc
+
+    return {base: sc.ticker for base, sc in tradeable.items()}
+
+
+def apply_share_class(
+    snapshots: list[SnapshotRow],
+    share_classes: list[ShareClassRow],
+    chosen: dict[str, str],
+) -> list[SnapshotRow]:
+    """Re-price snapshots at the chosen share class of each company.
+
+    The ibindex ticker is deliberately left in place: NAV, premium and
+    holdings are reported per company rather than per class, so everything
+    downstream must keep looking companies up by it. Only the price the
+    portfolio is bought at — and the name shown for it — follow the choice.
+    """
+    prices = {(sc.base_ticker, sc.ticker): sc.price for sc in share_classes}
+
+    repriced = []
+    for s in snapshots:
+        chosen_ticker = chosen.get(s.ticker)
+        price = prices.get((s.ticker, chosen_ticker)) if chosen_ticker else None
+        if chosen_ticker is None or price is None or chosen_ticker == s.ticker:
+            repriced.append(s)
+            continue
+        repriced.append(
+            s.model_copy(
+                update={
+                    "price": price,
+                    "product_name": _class_display_name(s.product_name, s.ticker, chosen_ticker),
+                }
+            )
+        )
+
+    return repriced

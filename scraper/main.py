@@ -7,8 +7,9 @@ import yfinance as yf  # type: ignore[import-untyped]
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from shared.constants import SHARE_CLASSES
 from shared.db import get_connection, init_db
-from shared.models import HoldingResponse, ProductResponse, WeightResponse
+from shared.models import HoldingResponse, ProductResponse, ShareClassRow, WeightResponse
 
 PRODUCTS_URL = "https://ibindex.se/ibi/index/getProducts.req"
 WEIGHTS_URL = "https://ibindex.se/ibi/index/getProductWeights.req"
@@ -79,28 +80,34 @@ def fetch_holdings(ticker: str) -> list[HoldingResponse]:
     return [HoldingResponse.model_validate(item) for item in response.json() or []]
 
 
+def _rate_to_sek(currency: str, cache: dict[str, float]) -> float:
+    if currency not in cache:
+        cache[currency] = float(yf.Ticker(f"{currency}SEK=X").fast_info["last_price"])
+    return cache[currency]
+
+
 def fetch_market_cap_weights(products: list[ProductResponse]) -> dict[str, float]:
     market_caps: dict[str, float] = {}
     fx_to_sek: dict[str, float] = {"SEK": 1.0}
 
-    yahoo_tickers = [to_yahoo_ticker(p.ticker) for p in products]
-    data = yf.Tickers(" ".join(yahoo_tickers))
-
     for p in products:
         yahoo_ticker = to_yahoo_ticker(p.ticker)
         try:
-            info = data.tickers[yahoo_ticker].info
-            shares = info.get("sharesOutstanding")
-            if not shares or p.price <= 0:
+            # fast_info, never .info: .info returns no sharesOutstanding at
+            # all for some tickers (INVE B — the largest company in the
+            # index), and where it does return one it counts only the quoted
+            # share class, halving the market cap of every company with a
+            # separate A class (INDU C, LUND B). fast_info["market_cap"] is
+            # priced off all classes.
+            info = yf.Ticker(yahoo_ticker).fast_info
+            market_cap = info["market_cap"]
+            if not market_cap:
+                print(f"No market cap for {p.ticker} ({yahoo_ticker})", file=sys.stderr)
                 continue
             # ibindex reports foreign listings (e.g. SON) in their native
-            # currency, so the market cap must be converted to SEK to be
-            # comparable.
-            currency = info.get("currency") or "SEK"
-            if currency not in fx_to_sek:
-                rate = yf.Ticker(f"{currency}SEK=X").fast_info["last_price"]
-                fx_to_sek[currency] = float(rate)
-            market_caps[p.ticker] = p.price * shares * fx_to_sek[currency]
+            # currency, and so does Yahoo — convert to SEK to be comparable.
+            currency = info["currency"] or "SEK"
+            market_caps[p.ticker] = float(market_cap) * _rate_to_sek(currency, fx_to_sek)
         except Exception as exc:
             print(f"Market cap unavailable for {p.ticker} ({yahoo_ticker}): {exc}", file=sys.stderr)
 
@@ -109,6 +116,45 @@ def fetch_market_cap_weights(products: list[ProductResponse]) -> dict[str, float
         return {}
 
     return {ticker: (cap / total) * 100 for ticker, cap in market_caps.items()}
+
+
+def fetch_share_classes(
+    products: list[ProductResponse], scraped_at: datetime
+) -> list[ShareClassRow]:
+    """Price every listed class of the multi-class companies in the index.
+
+    ibindex quotes one class per company, so the alternatives come from
+    Yahoo. All classes — the ibindex one included — are priced from the same
+    source so the spread between them is a like-for-like comparison.
+    Average volume travels with the price because thinly traded A shares
+    carry stale quotes that would otherwise look like a free discount.
+    """
+    rows: list[ShareClassRow] = []
+
+    for p in products:
+        for ticker in SHARE_CLASSES.get(p.ticker, []):
+            yahoo_ticker = to_yahoo_ticker(ticker)
+            try:
+                history = yf.Ticker(yahoo_ticker).history(period="1mo")
+                if history.empty:
+                    print(f"No quotes for share class {ticker}", file=sys.stderr)
+                    continue
+                price = float(history["Close"].iloc[-1])
+                if price <= 0:
+                    continue
+                rows.append(
+                    ShareClassRow(
+                        base_ticker=p.ticker,
+                        ticker=ticker,
+                        price=price,
+                        avg_volume=float(history["Volume"].mean()),
+                        scraped_at=scraped_at,
+                    )
+                )
+            except Exception as exc:
+                print(f"Share class unavailable for {ticker}: {exc}", file=sys.stderr)
+
+    return rows
 
 
 def require_minimum_coverage(label: str, successful: int, total: int) -> None:
@@ -154,6 +200,12 @@ def main() -> None:
                 holdings[p.ticker] = []
         require_minimum_coverage("Holdings", holdings_fetches_ok, len(products))
         print(f"Innehav hämtade för {sum(1 for h in holdings.values() if h)} bolag")
+
+        print("Hämtar alternativa aktieslag...")
+        # Best-effort: the A/B comparison is a side feature, so a Yahoo
+        # outage here must not cost the evening's prices and holdings.
+        share_classes = fetch_share_classes(products, scraped_at)
+        print(f"Aktieslag prissatta: {len(share_classes)}")
 
         with get_connection() as conn, conn.cursor() as cur:
             row = cur.execute(
@@ -223,6 +275,18 @@ def main() -> None:
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     holding_rows,
+                )
+            if share_classes:
+                cur.executemany(
+                    """
+                    INSERT INTO share_classes (
+                        scrape_run_id, base_ticker, ticker, price, avg_volume, scraped_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    [
+                        (run_id, sc.base_ticker, sc.ticker, sc.price, sc.avg_volume, sc.scraped_at)
+                        for sc in share_classes
+                    ],
                 )
 
         print(f"Scraped {len(products)} products (run_id={run_id})")

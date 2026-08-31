@@ -29,3 +29,22 @@ NASDAQ_LIST: dict[str, str] = {
 UNKNOWN_LIST = "Okänd lista"
 
 LISTS = ["Large Cap", "Mid Cap", "Small Cap", "First North", "Euronext Lisbon", UNKNOWN_LIST]
+
+# Investment companies quoted in more than one share class. Economic rights
+# are identical across classes (same dividend, same claim on NAV) — only
+# voting power differs — so for a passive owner the cheaper class is simply
+# more NAV per krona. Keyed by ibindex ticker; the ibindex ticker itself is
+# always part of its own list. Update manually when a class is added or
+# delisted — verified against Yahoo Finance 2026-08-31.
+SHARE_CLASSES: dict[str, list[str]] = {
+    "INVE B": ["INVE A", "INVE B"],
+    "INDU C": ["INDU A", "INDU C"],
+    "KINV B": ["KINV A", "KINV B"],
+    "SVOL B": ["SVOL A", "SVOL B"],
+}
+
+# A shares are often barely traded (SVOL A: 5 trading days out of 22, 41
+# shares/day), which makes their last price stale and the apparent spread
+# meaningless. Below this average daily volume a class is shown but flagged,
+# and never auto-selected as "cheapest".
+MIN_SHARE_CLASS_VOLUME = 1_000.0

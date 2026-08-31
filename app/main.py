@@ -6,26 +6,38 @@ from datetime import UTC, datetime, timedelta
 import streamlit as st
 
 from app.charts import bars, donut
-from app.portfolio import InfeasibleCapError, WeightingMethod, allocate, expand_allocations
+from app.portfolio import (
+    InfeasibleCapError,
+    WeightingMethod,
+    allocate,
+    apply_share_class,
+    cheapest_share_classes,
+    compare_share_classes,
+    expand_allocations,
+)
 from shared.constants import LISTS, NASDAQ_LIST, UNKNOWN_LIST
-from shared.db import get_holdings, get_latest_run, get_snapshots
-from shared.models import HoldingRow, SnapshotRow
+from shared.db import get_holdings, get_latest_run, get_share_classes, get_snapshots
+from shared.models import HoldingRow, ShareClassRow, SnapshotRow
 
 VIEW_COMPANIES = "Investmentbolag"
 VIEW_PREMIUM = "Ersätt bolag med premie"
 VIEW_LOOK_THROUGH = "Endast underliggande bolag"
+
+CLASS_IBINDEX = "Som ibindex"
+CLASS_CHEAPEST = "Billigaste"
+CLASS_MANUAL = "Välj själv"
 
 
 # Streamlit reruns the whole script on every widget interaction; without the
 # cache each slider tick opens fresh DB connections. One loader keeps the
 # snapshot/holdings pair consistent (same scrape run).
 @st.cache_data(ttl=300)
-def load_data() -> tuple[datetime, list[SnapshotRow], list[HoldingRow]] | None:
+def load_data() -> tuple[datetime, list[SnapshotRow], list[HoldingRow], list[ShareClassRow]] | None:
     run = get_latest_run()
     if run is None:
         return None
     run_id, scraped_at = run
-    return scraped_at, get_snapshots(run_id), get_holdings(run_id)
+    return scraped_at, get_snapshots(run_id), get_holdings(run_id), get_share_classes(run_id)
 
 
 st.set_page_config(page_title="ibindex portfolio", layout="wide")
@@ -110,7 +122,7 @@ if data is None:
     st.warning("Ingen data hittad. Kör scrapern: python -m scraper.main")
     st.stop()
 
-scraped_dt, snapshots, holdings = data
+scraped_dt, snapshots, holdings, share_classes = data
 
 age = datetime.now(UTC) - scraped_dt
 st.caption(f"Senast uppdaterad: {scraped_dt.strftime('%Y-%m-%d %H:%M')} UTC")
@@ -122,8 +134,46 @@ if age > timedelta(hours=72):
 
 # --- Portfolio ---
 filtered = [s for s in snapshots if NASDAQ_LIST.get(s.ticker, UNKNOWN_LIST) in selected_lists]
+
+# --- Share class choice ---
+# Rendered here rather than in the sidebar block above because it needs the
+# scraped data, which loads after it. A second `with st.sidebar` appends.
+classes_by_base: dict[str, list[ShareClassRow]] = {}
+for sc in sorted(share_classes, key=lambda c: c.price):
+    if any(s.ticker == sc.base_ticker for s in filtered):
+        classes_by_base.setdefault(sc.base_ticker, []).append(sc)
+multi_class = {base: cs for base, cs in classes_by_base.items() if len(cs) > 1}
+
+chosen_classes: dict[str, str] = {}
+if multi_class:
+    with st.sidebar:
+        class_mode = st.radio(
+            "Aktieslag",
+            options=[CLASS_IBINDEX, CLASS_CHEAPEST, CLASS_MANUAL],
+            help=(
+                "Vissa bolag är noterade i två aktieslag med identisk rätt till "
+                "utdelning och substans — bara rösterna skiljer. Det billigaste "
+                "ger därför mest substans per krona. Illikvida aktieslag väljs "
+                "aldrig automatiskt."
+            ),
+        )
+        if class_mode == CLASS_CHEAPEST:
+            chosen_classes = cheapest_share_classes(share_classes)
+        elif class_mode == CLASS_MANUAL:
+            names = {s.ticker: s.product_name for s in filtered}
+            for base, classes in sorted(multi_class.items()):
+                options = [c.ticker for c in classes]
+                chosen_classes[base] = st.selectbox(
+                    names[base],
+                    options=options,
+                    index=options.index(base) if base in options else 0,
+                    key=f"class_{base}",
+                )
+
+portfolio = apply_share_class(filtered, share_classes, chosen_classes)
+
 try:
-    results = allocate(filtered, float(capital), method=method, cap=float(cap))
+    results = allocate(portfolio, float(capital), method=method, cap=float(cap))
 except InfeasibleCapError as exc:
     st.warning(
         f"Ett tak på {exc.cap_pct:g} % är inte möjligt med "
@@ -144,6 +194,39 @@ invested_col, cash_col = st.columns(2)
 invested_col.metric("Investerat", f"{invested_total:,.0f} SEK")
 cash_col.metric("Kvar i kassa", f"{cash:,.0f} SEK")
 
+# --- Share class comparison ---
+comparisons = compare_share_classes(filtered, share_classes)
+if comparisons:
+    # comparisons[0] is the widest spread among the classes that actually
+    # trade, which is the only one worth putting in the headline.
+    headline = comparisons[0]
+    others = f" (+ {len(comparisons) - 1} till)" if len(comparisons) > 1 else ""
+    with st.expander(
+        f"Aktieslag: {headline.cheapest_ticker} är {headline.spread_pct:.1f} % "
+        f"billigare än {headline.priciest_ticker}{others}"
+    ):
+        st.dataframe(
+            [
+                {
+                    "Bolag": c.product_name,
+                    "Billigast": c.cheapest_ticker,
+                    "Pris (SEK)": f"{c.cheapest_price:,.2f}",
+                    "Dyrast": c.priciest_ticker,
+                    "Pris (SEK) ": f"{c.priciest_price:,.2f}",
+                    "Skillnad (%)": f"{c.spread_pct:.2f}",
+                    "Anmärkning": "Tunt handlat — priset kan vara inaktuellt" if c.illiquid else "",
+                }
+                for c in comparisons
+            ],
+            width="stretch",
+            hide_index=True,
+        )
+        st.caption(
+            "Aktieslagen har identisk rätt till utdelning och substansvärde — "
+            "skillnaden är rösträtt. För en passiv ägare ger det billigaste "
+            "aktieslaget mest substans per krona."
+        )
+
 # --- Holdings-based views ---
 if view != VIEW_COMPANIES and not holdings:
     st.info("Innehavsdata saknas ännu — den fylls på vid nästa scrape. Visar investmentbolag.")
@@ -152,7 +235,7 @@ if view != VIEW_COMPANIES and not holdings:
 if view == VIEW_COMPANIES:
     table_data = [
         {
-            "Ticker": r.ticker,
+            "Ticker": chosen_classes.get(r.ticker, r.ticker),
             "Bolag": r.product_name,
             "Pris (SEK)": f"{r.price:,.2f}",
             "Målvikt (%)": f"{r.weight:.2f}",
@@ -181,7 +264,7 @@ if view == VIEW_COMPANIES:
 else:
     expanded, replaced, unavailable = expand_allocations(
         results,
-        filtered,
+        portfolio,
         holdings,
         expand_all=view == VIEW_LOOK_THROUGH,
         premium_threshold=premium_threshold,
@@ -239,7 +322,7 @@ else:
     st.altair_chart(bars(chart_rows), width="stretch")
 
 # --- Companies without weights ---
-no_weight = [s for s in filtered if not s.market_cap_weight]
+no_weight = [s for s in portfolio if not s.market_cap_weight]
 if no_weight:
     suffix = "men ingår i likaviktningen" if method == WeightingMethod.EQUAL else "och ingår inte"
     with st.expander(f"{len(no_weight)} bolag saknar marknadsvikt ({suffix})"):

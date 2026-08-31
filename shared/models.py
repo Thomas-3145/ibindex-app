@@ -55,6 +55,16 @@ class HoldingRow(BaseModel):
     scraped_at: datetime
 
 
+class ShareClassRow(BaseModel):
+    """One row from the share_classes table: an alternative listing of a company."""
+
+    base_ticker: str
+    ticker: str
+    price: float
+    avg_volume: float | None
+    scraped_at: datetime
+
+
 class SnapshotRow(BaseModel):
     """One row from the snapshots table, joined with products."""
 
@@ -96,3 +106,21 @@ class UnderlyingAllocation(BaseModel):
     allocated_sek: float
     weight: float
     via: list[str]
+
+
+class ShareClassComparison(BaseModel):
+    """The cheapest and most expensive listed class of one company.
+
+    `spread_pct` is how much more the expensive class costs than the cheap
+    one. `illiquid` flags that at least one class trades too thinly for its
+    last price — and therefore the spread — to be trusted.
+    """
+
+    base_ticker: str
+    product_name: str
+    cheapest_ticker: str
+    cheapest_price: float
+    priciest_ticker: str
+    priciest_price: float
+    spread_pct: float
+    illiquid: bool

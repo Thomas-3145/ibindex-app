@@ -51,3 +51,18 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_ticker_scraped
 
 CREATE INDEX IF NOT EXISTS idx_snapshots_run
     ON snapshots(scrape_run_id);
+
+-- Alternative share classes (A/B/C) of the companies in the index, priced
+-- from Yahoo Finance. ibindex quotes only one class per company.
+CREATE TABLE IF NOT EXISTS share_classes (
+    id            SERIAL PRIMARY KEY,
+    scrape_run_id INTEGER NOT NULL REFERENCES scrape_runs(id),
+    base_ticker   TEXT NOT NULL REFERENCES products(ticker),
+    ticker        TEXT NOT NULL,
+    price         NUMERIC NOT NULL,
+    avg_volume    NUMERIC,
+    scraped_at    TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_share_classes_run
+    ON share_classes(scrape_run_id);

@@ -6,7 +6,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
-from shared.models import HoldingRow, SnapshotRow
+from shared.models import HoldingRow, ShareClassRow, SnapshotRow
 
 _SCHEMA_PATH = Path(__file__).parent.parent / "db" / "schema.sql"
 
@@ -90,3 +90,23 @@ def get_holdings(run_id: int) -> list[HoldingRow]:
         rows = conn.execute(sql, (run_id,)).fetchall()
 
     return [HoldingRow(**row) for row in rows]
+
+
+def get_share_classes(run_id: int) -> list[ShareClassRow]:
+    sql = """
+        SELECT base_ticker, ticker, price, avg_volume, scraped_at
+        FROM share_classes
+        WHERE scrape_run_id = %s
+        ORDER BY base_ticker, price
+    """
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(sql, (run_id,)).fetchall()
+    except psycopg.errors.UndefinedTable:
+        # ArgoCD rolls out the app as soon as the image tag moves, but the
+        # schema is applied by the scraper CronJob — which may be a day away.
+        # The share class view degrades to hidden; failing here would take the
+        # whole app down until the next scrape.
+        return []
+
+    return [ShareClassRow(**row) for row in rows]

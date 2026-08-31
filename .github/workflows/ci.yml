@@ -51,7 +51,7 @@ jobs:
         run: uv sync --extra dev
 
       - name: Pytest
-        run: uv run pytest --cov=shared --cov=app --cov-report=term-missing
+        run: uv run pytest --cov=shared --cov=app --cov=scraper --cov-report=term-missing
 
   docker:
     name: Build & push image

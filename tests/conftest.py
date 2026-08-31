@@ -1,10 +1,27 @@
+from collections.abc import Iterator
 from datetime import UTC, datetime
+from typing import Any
 
+import pandas as pd
 import pytest
+import streamlit as st
 
-from shared.models import HoldingRow, SnapshotRow
+import scraper.main as scraper
+from shared.models import HoldingRow, ShareClassRow, SnapshotRow
 
 NOW = datetime.now(UTC)
+
+
+@pytest.fixture(autouse=True)
+def _clear_streamlit_cache() -> Iterator[None]:
+    """`load_data` is cached and takes no arguments, so it is one global slot.
+
+    Without this, the second AppTest in a session renders the first one's
+    data no matter what the stubbed database returns.
+    """
+    st.cache_data.clear()
+    yield
+    st.cache_data.clear()
 
 
 def _holding(
@@ -103,3 +120,86 @@ def sample_snapshots() -> list[SnapshotRow]:
             scraped_at=NOW,
         ),
     ]
+
+
+@pytest.fixture
+def sample_share_classes() -> list[ShareClassRow]:
+    """Two multi-class companies, matching the prices in `sample_snapshots`.
+
+    INVE A is cheaper and liquid — the case worth acting on. KINV A is
+    cheaper still but barely trades, which is the trap: a stale quote that
+    looks like a discount.
+    """
+    return [
+        ShareClassRow(
+            base_ticker="INVE B",
+            ticker="INVE A",
+            price=285.0,
+            avg_volume=400_000.0,
+            scraped_at=NOW,
+        ),
+        ShareClassRow(
+            base_ticker="INVE B",
+            ticker="INVE B",
+            price=300.0,
+            avg_volume=2_000_000.0,
+            scraped_at=NOW,
+        ),
+        ShareClassRow(
+            base_ticker="KINV B",
+            ticker="KINV A",
+            price=120.0,
+            avg_volume=41.0,
+            scraped_at=NOW,
+        ),
+        ShareClassRow(
+            base_ticker="KINV B",
+            ticker="KINV B",
+            price=150.0,
+            avg_volume=900_000.0,
+            scraped_at=NOW,
+        ),
+    ]
+
+
+class _FakeTicker:
+    """Stands in for yfinance.Ticker: fast_info, history, and a tripwire on .info."""
+
+    def __init__(self, symbol: str, quotes: dict[str, Any], info_reads: list[str]) -> None:
+        self._symbol = symbol
+        self._quotes = quotes
+        self._info_reads = info_reads
+
+    @property
+    def fast_info(self) -> dict[str, Any]:
+        return self._quotes.get(self._symbol, {})
+
+    @property
+    def info(self) -> dict[str, Any]:
+        # The market cap bug lived here. Record reads so a regression reports
+        # itself as "read .info" rather than as a silently empty result.
+        self._info_reads.append(self._symbol)
+        return {}
+
+    def history(self, period: str = "1mo") -> pd.DataFrame:
+        return self._quotes.get(self._symbol, {}).get("history", pd.DataFrame())
+
+
+@pytest.fixture
+def fake_yf(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Replace the yfinance module in scraper.main with a scripted fake.
+
+    Populate `quotes` with {yahoo_symbol: {"market_cap": ..., "currency": ...,
+    "last_price": ..., "history": DataFrame}}; unknown symbols behave like a
+    delisted ticker.
+    """
+    quotes: dict[str, Any] = {}
+    info_reads: list[str] = []
+
+    class FakeYf:
+        @staticmethod
+        def Ticker(symbol: str) -> _FakeTicker:  # noqa: N802 - mirrors yfinance
+            return _FakeTicker(symbol, quotes, info_reads)
+
+    monkeypatch.setattr(scraper, "yf", FakeYf)
+    return {"quotes": quotes, "info_reads": info_reads}
